@@ -1,14 +1,22 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-from contextlib import asynccontextmanager
 
 from app.api.router import api_router
 from app.api.rag_router import rag_router
 from app.core.config import settings
 from app.core.db import init_db
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+WEB_ROOT = PROJECT_ROOT / "app" / "web"
+STATIC_DIR = WEB_ROOT / "static"
+TEMPLATES_DIR = WEB_ROOT / "templates"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,8 +56,8 @@ app.include_router(api_router, prefix="/api/v1")
 app.include_router(rag_router, prefix="/api/v1")
 
 # Mount Static Files and Templates
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):

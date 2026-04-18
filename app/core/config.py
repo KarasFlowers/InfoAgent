@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -11,8 +11,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _resolve_path(value: str) -> str:
     path = Path(value)
     if path.is_absolute():
-        return str(path)
-    return str((PROJECT_ROOT / path).resolve())
+        resolved = path
+    else:
+        resolved = (PROJECT_ROOT / path).resolve()
+
+    resolved.mkdir(parents=True, exist_ok=True)
+    return str(resolved)
 
 
 def _resolve_sqlite_uri(value: str) -> str:
@@ -25,13 +29,16 @@ def _resolve_sqlite_uri(value: str) -> str:
         return value
 
     resolved = Path(db_path)
-    if resolved.is_absolute():
-        return value
+    if not resolved.is_absolute():
+        resolved = (PROJECT_ROOT / resolved).resolve()
 
-    return f"{prefix}{(PROJECT_ROOT / resolved).resolve().as_posix()}"
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    return f"{prefix}{resolved.as_posix()}"
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+
     PROJECT_NAME: str = "InfoAgent"
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
@@ -55,13 +62,13 @@ class Settings(BaseSettings):
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
     
     # Database
-    SQLALCHEMY_DATABASE_URI: str = "sqlite+aiosqlite:///./infoagent.db"
+    SQLALCHEMY_DATABASE_URI: str = "sqlite+aiosqlite:///./data/sqlite/infoagent.db"
     
     # Retention Policy
     HISTORY_DAYS_TO_KEEP: int = 7
     
     # RAG Vector Store
-    CHROMA_DB_DIR: str = "./chroma_db"
+    CHROMA_DB_DIR: str = "./data/chroma"
     
     # Redis Cache
     REDIS_URL: str = "redis://localhost:6379"
@@ -98,8 +105,5 @@ class Settings(BaseSettings):
                 return json.loads(raw)
             return [origin.strip() for origin in raw.split(",") if origin.strip()]
         return value
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()

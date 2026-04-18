@@ -56,6 +56,7 @@ coverage.xml
 .venv
 env/
 venv/
+venv_broken/
 ENV/
 env.bak/
 venv.bak/
@@ -63,6 +64,25 @@ venv.bak/
 # IDE / Editor specific
 .idea/
 .vscode/
+.claude/
+.astrbot
 *.swp
 *.swo
 *~
+
+# Runtime data
+data/chroma/
+data/sqlite/*.db
+data/sqlite/*.sqlite3
+data/cmd_config.json
+data/dashboard.zip
+data/dist/
+data/config/
+data/plugins/
+data/temp/
+data/t2i_templates/
+logs/*.log
+
+# Local tools
+tools/redis/
+tools/*.zip

@@ -1,75 +1,92 @@
-# 🤖 InfoAgent: AI-Powered Daily Tech Briefing
+# InfoAgent
 
-InfoAgent is a smart information aggregation agent designed for developers and tech enthusiasts. It scrapes high-quality RSS feeds, uses LLMs (DeepSeek) to summarize key insights, and provides a RAG-based chat interface for deep-diving into specific articles.
+InfoAgent is a FastAPI-based daily tech briefing app. It aggregates RSS feeds, asks DeepSeek to curate a structured summary, and provides article-level RAG chat with feedback-driven personalization.
 
-## ✨ Features
+## Features
 
-- **Multi-Source Aggregation**: HN, Ars Technica, OpenAI, Hugging Face, etc.
-- **AI-Driven Curation**: Summarizes daily news into structured "Vibe" overviews and key points.
-- **Auto-Tagging**: Intelligent categorization of articles (e.g., #AI, #Security).
-- **RAG Chat**: Ask follow-up questions about any article using vector-retrieval.
-- **Glassmorphism UI**: Modern, dark-themed responsive dashboard.
-- **Local Persistence**: Uses SQLite and ChromaDB for data and vector storage.
+- Multi-source RSS aggregation for tech and AI news
+- LLM-driven daily briefing with categories, key points, and tags
+- Article overview and follow-up Q&A via RAG
+- Explicit like/dislike feedback for personalized reranking
+- Local persistence with SQLite, ChromaDB, and Redis cache
 
----
+## Quick Start
 
-## 🚀 Quick Start (Dockerized) - Recommended
+### Docker
 
-The simplest way to deploy InfoAgent is using Docker. This ensures all dependencies (including Redis) are correctly configured.
+1. Copy `.env.template` to `.env` and fill in your API key.
+2. Start the stack:
 
-### Prerequisites
-- [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/)
-- A **DeepSeek API Key** (Get one at [deepseek.com](https://www.deepseek.com/))
+```bash
+docker compose up -d
+```
 
-### Steps
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/your-username/InfoAgent.git
-    cd InfoAgent
-    ```
-2.  **Configure environment**:
-    Create a `.env` file in the root with your API key:
-    ```bash
-    DEEPSEEK_API_KEY="your_api_key_here"
-    ```
-3.  **Launch**:
-    ```bash
-    docker compose up -d
-    ```
-4.  **Access the Dashboard**:
-    Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
+3. Open `http://127.0.0.1:8000`.
 
----
+### Local Development
 
-## 🛠 Manual Setup (Local Development)
+1. Create and activate a virtual environment:
 
-If you prefer to run it directly on your machine:
+```bash
+python -m venv venv
+# Windows
+venv\Scripts\activate
+```
 
-1.  **Create Virtual Environment**:
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # Windows: venv\Scripts\activate
-    ```
-2.  **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-3.  **Run Redis**:
-    Ensure a Redis server is running at `localhost:6379`.
-4.  **Launch Application**:
-    - **Windows**: Use `Open_Web_Dashboard.bat`
-    - **Standard**: `uvicorn main:app --reload`
+2. Install dependencies:
 
----
+```bash
+pip install -r requirements.txt
+```
 
-## 🏗 Project Structure
+3. Start Redis.
+   Windows helper: `scripts\windows\Start_Redis.bat`
 
-- `app/api/`: API routes (Summary & RAG)
-- `app/services/`: Core logic (LLM, RSS, DB, VectorStore)
-- `app/models/`: SQLModel and Pydantic schemas
-- `static/` & `templates/`: Frontend assets
-- `chroma_db/`: Persistent vector storage
-- `infoagent.db`: Main application database (SQLite)
+4. Start the app:
 
-## 📄 License
+```bash
+uvicorn main:app --reload
+```
+
+5. Optional helpers:
+
+```bash
+python scripts/cli.py
+python scripts/run_daily_summary.py
+```
+
+## Project Layout
+
+```text
+.
+├─ app/
+│  ├─ api/          # FastAPI routes
+│  ├─ core/         # Config, DB, shared utilities
+│  ├─ models/       # SQLModel + Pydantic models
+│  ├─ services/     # RSS, LLM, RAG, learning, persistence
+│  └─ web/          # Jinja templates and static assets
+├─ data/
+│  ├─ chroma/       # Local vector store
+│  └─ sqlite/       # Local SQLite database
+├─ docs/            # Project notes and paper materials
+├─ logs/            # Local runtime logs
+├─ scripts/
+│  ├─ dev/          # Debug and migration utilities
+│  └─ windows/      # Windows launchers
+├─ tests/           # API tests
+└─ tools/           # Local bundled tools such as Redis
+```
+
+## Important Paths
+
+- Web entry: `main.py`
+- App package: `app/`
+- Frontend assets: `app/web/static/`
+- Templates: `app/web/templates/`
+- SQLite DB: `data/sqlite/infoagent.db`
+- Chroma store: `data/chroma/`
+- Windows launchers: `scripts/windows/`
+
+## License
+
 MIT

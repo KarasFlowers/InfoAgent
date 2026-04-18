@@ -16,14 +16,13 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./infoagent.db:/app/infoagent.db 
-      - ./chroma_db:/app/chroma_db 
+      - ./data:/app/data
       # .env file override
-      - ./.env:/app/.env 
+      - ./.env:/app/.env
     environment:
       - REDIS_URL=redis://redis:6379
-      - SQLALCHEMY_DATABASE_URI=sqlite+aiosqlite:///./infoagent.db
-      - CHROMA_DB_DIR=./chroma_db
+      - SQLALCHEMY_DATABASE_URI=sqlite+aiosqlite:///./data/sqlite/infoagent.db
+      - CHROMA_DB_DIR=./data/chroma
     restart: unless-stopped
 
 # No non-bind volumes needed for this project's current state.
