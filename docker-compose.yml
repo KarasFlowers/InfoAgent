@@ -1,0 +1,29 @@
+name: infoagent
+
+services:
+  redis:
+    image: redis:alpine
+    container_name: infoagent-redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  app:
+    build: .
+    container_name: infoagent-app
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./infoagent.db:/app/infoagent.db 
+      - ./chroma_db:/app/chroma_db 
+      # .env file override
+      - ./.env:/app/.env 
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - SQLALCHEMY_DATABASE_URI=sqlite+aiosqlite:///./infoagent.db
+      - CHROMA_DB_DIR=./chroma_db
+    restart: unless-stopped
+
+# No non-bind volumes needed for this project's current state.

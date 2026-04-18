@@ -1,0 +1,60 @@
+import json
+import logging
+from typing import Any
+from redis.asyncio import Redis, ConnectionError
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+class RedisService:
+    def __init__(self):
+        self._redis: Redis | None = None
+        
+    async def get_client(self) -> Redis | None:
+        if self._redis is None:
+            try:
+                self._redis = Redis.from_url(
+                    settings.REDIS_URL,
+                    decode_responses=True,
+                    socket_timeout=2.0
+                )
+                # Test connection
+                await self._redis.ping()
+                logger.info("Successfully connected to Redis.")
+            except Exception as e:
+                logger.warning(f"Failed to connect to Redis at {settings.REDIS_URL}: {e}")
+                self._redis = None
+                
+        return self._redis
+        
+    async def get_cache(self, key: str) -> dict | None:
+        """Retrieve and parse JSON data from Redis cache."""
+        client = await self.get_client()
+        if not client:
+            return None
+            
+        try:
+            cached_data = await client.get(key)
+            if cached_data:
+                return json.loads(cached_data)
+        except Exception as e:
+            logger.error(f"Error reading from Redis cache ({key}): {e}")
+            
+        return None
+        
+    async def set_cache(self, key: str, value: dict, expire_seconds: int = 900) -> bool:
+        """Serialize and save data to Redis cache with expiration."""
+        client = await self.get_client()
+        if not client:
+            return False
+            
+        try:
+            serialized_value = json.dumps(value, ensure_ascii=False)
+            await client.setex(key, expire_seconds, serialized_value)
+            return True
+        except Exception as e:
+            logger.error(f"Error writing to Redis cache ({key}): {e}")
+            return False
+
+# Singleton instance
+redis_service = RedisService()

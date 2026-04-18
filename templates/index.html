@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="InfoAgent - AI Daily Tech Briefing">
+    <title>InfoAgent | 每日科技简报</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/index.css">
+</head>
+<body>
+    <div class="container">
+        <header class="page-header">
+            <span class="brand">InfoAgent</span>
+            <h1 class="title" id="summary-date">正在加载简报...</h1>
+            <div class="header-actions">
+                <button id="persona-btn" class="back-btn" onclick="togglePersonaPanel()" title="查看我的偏好设置">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                    我的偏好
+                </button>
+                <button id="refresh-btn" class="back-btn" style="display:none;" onclick="openRefreshModal()" title="重新抓取并生成简报">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                    重新生成
+                </button>
+                <button id="magazine-btn" class="back-btn" onclick="toggleMagazinePanel()" title="查看本周深度周刊">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+                    周刊
+                </button>
+                <button id="history-btn" class="back-btn" onclick="toggleHistoryPanel()" title="查看历史记录归档">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                    往日
+                </button>
+            </div>
+        </header>
+
+        <!-- Persona Panel (HUD) -->
+        <aside id="persona-panel" class="persona-panel">
+            <div class="persona-header">
+                <h3>偏好设置</h3>
+                <button class="close-btn" onclick="togglePersonaPanel()">&times;</button>
+            </div>
+            <div class="persona-section">
+                <h4>长期偏好</h4>
+                <div id="persona-instructions" class="persona-list"></div>
+            </div>
+            
+            <!-- New: Recommendation Report Section -->
+            <div class="persona-section report-section" id="rec-report-container" style="display:none;">
+                <hr class="section-divider">
+                <h4>推送报告</h4>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-total">0</span>
+                        <span class="stat-label">总抓取</span>
+                    </div>
+                    <div class="stat-card accent">
+                        <span class="stat-value" id="stat-passed">0</span>
+                        <span class="stat-label">入选</span>
+                    </div>
+                </div>
+                <div class="exclusion-section">
+                    <h5>已被过滤的样本</h5>
+                    <ul id="excluded-samples" class="exclusion-list"></ul>
+                </div>
+            </div>
+        </aside>
+
+        <!-- History Modal (Archives Only) -->
+        <div id="history-modal" class="modal-overlay" onclick="if(event.target === this) toggleHistoryPanel()">
+            <div class="modal-content history-modal-content">
+                <div class="persona-header">
+                    <h3>历史简报归档</h3>
+                    <button class="close-btn" onclick="toggleHistoryPanel()">&times;</button>
+                </div>
+                <div class="persona-section history-modal-body">
+                    <p class="history-hint">浏览近期已生成的归档，悬浮可查看摘要</p>
+                    <div id="history-list" class="history-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Weekly Magazine Modal -->
+        <div id="magazine-modal" class="modal-overlay" onclick="if(event.target === this) toggleMagazinePanel()">
+            <div class="modal-content magazine-modal-content">
+                <div class="persona-header">
+                    <div class="magazine-title-group">
+                        <span class="magazine-badge">WEEKLY INSIGHT</span>
+                        <h3>本周深度周刊</h3>
+                    </div>
+                    <button class="close-btn" onclick="toggleMagazinePanel()">&times;</button>
+                </div>
+                <div class="magazine-body">
+                    <div id="magazine-recap-stats"></div>
+                    <div class="magazine-action-bar">
+                        <button id="gen-weekly-btn" class="magazine-gen-btn" onclick="triggerWeeklyInsight()">
+                            ⚡ 生成本周深读 (Wired Style)
+                        </button>
+                    </div>
+                    <div id="weekly-insight-content" class="weekly-insight-content">
+                        <p class="magazine-placeholder">点击上方按钮，AI 主编将为你复盘本周技术版图的深层变革。</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading / Error View -->
+        <div id="loading-state" class="loading-container">
+            <div class="spinner"></div>
+            <p>AI 编辑正在努力生成今日简报，这可能需要几十秒...</p>
+        </div>
+
+        <!-- Populated Content View -->
+        <div id="content-state" style="display: none;">
+            <section class="overview-section fade-in">
+                <div class="overview-card" id="summary-overview"></div>
+                <div id="category-nav" class="category-nav"></div>
+                <div id="stats-container" class="stats-container"></div>
+            </section>
+            <main>
+                <!-- View Controls (Hidden by default) -->
+                <div id="view-controls" style="display: none; margin-bottom: 2rem; animation: fadeIn 0.4s ease;">
+                    <button id="back-to-dashboard" class="back-btn" onclick="showDashboard()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                        返回看板
+                    </button>
+                </div>
+                
+                <div class="news-grid" id="news-container"></div>
+            </main>
+        </div>
+    </div>
+
+    <!-- RAG Chat Panel (Slide-in from right) -->
+    <div id="rag-overlay" class="rag-overlay"></div>
+    <aside id="rag-panel" class="rag-panel">
+        <div class="rag-panel__header">
+            <div class="rag-panel__title-group">
+                <span class="rag-panel__label">💬 深度追问</span>
+                <p id="rag-article-title" class="rag-panel__article-title">正在加载...</p>
+            </div>
+            <button id="rag-close-btn" class="rag-close-btn" aria-label="关闭">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div id="rag-messages" class="rag-messages"></div>
+        <form id="rag-form" class="rag-form">
+            <input
+                id="rag-input"
+                type="text"
+                class="rag-input"
+                placeholder="问一个关于这篇文章的问题..."
+                autocomplete="off"
+                disabled
+            />
+            <button type="submit" class="rag-submit-btn" aria-label="发送">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+        </form>
+    </aside>
+
+    <!-- Refresh Modal -->
+    <div id="refresh-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3>重新调教简报</h3>
+            <p>你可以增加额外的指令来引导 AI 生成今日简报：</p>
+            <textarea id="refresh-preference" placeholder="例如：多看 AI 大模型，少看硬件细节..."></textarea>
+            <div class="modal-options">
+                <label class="checkbox-container">
+                    <input type="checkbox" id="save-preference-chk">
+                    <span class="checkmark"></span>
+                    设为长期兴趣 (持久化)
+                </label>
+            </div>
+            <div class="modal-btns">
+                <button class="back-btn" onclick="closeRefreshModal()">取消</button>
+                <button class="primary-btn" onclick="confirmForceRefresh()">开始重新生成</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

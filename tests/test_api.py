@@ -1,0 +1,85 @@
+"""
+test_api.py - Integration tests for core InfoAgent API endpoints.
+
+Tests:
+  - Health check (GET /api/v1/ping)
+  - Summary endpoint (GET /api/v1/summary)
+  - RAG ingest (POST /api/v1/rag/ingest)
+  - RAG history (GET /api/v1/rag/history)
+  - RAG feedback (POST /api/v1/rag/feedback)
+"""
+
+import pytest
+
+
+@pytest.mark.anyio
+async def test_ping(client):
+    """Health check should return status=ok."""
+    response = await client.get("/api/v1/ping")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["message"] == "pong"
+
+
+@pytest.mark.anyio
+async def test_summary_endpoint_responds(client):
+    """Summary endpoint should return 200 (or 500 if no API key, but not crash)."""
+    response = await client.get("/api/v1/summary")
+    # Accept either 200 (cached/generated) or 500 (no API key in test env)
+    assert response.status_code in (200, 500)
+
+
+@pytest.mark.anyio
+async def test_rag_ingest_rejects_empty(client):
+    """Ingest should reject an empty URL."""
+    response = await client.post(
+        "/api/v1/rag/ingest",
+        json={"url": ""}
+    )
+    # Should fail validation or return error
+    assert response.status_code in (422, 500)
+
+
+@pytest.mark.anyio
+async def test_rag_query_requires_ingest(client):
+    """Query should fail if URL hasn't been ingested."""
+    response = await client.post(
+        "/api/v1/rag/query",
+        json={"url": "https://example.com/never-ingested", "question": "test?"}
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_rag_history_returns_empty(client):
+    """History for an unknown URL should return empty list."""
+    response = await client.get(
+        "/api/v1/rag/history",
+        params={"url": "https://example.com/no-history"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["history"] == []
+
+
+@pytest.mark.anyio
+async def test_feedback_rejects_invalid_sentiment(client):
+    """Feedback should reject invalid sentiment values."""
+    response = await client.post(
+        "/api/v1/rag/feedback",
+        json={"url": "https://example.com", "sentiment": 5}
+    )
+    assert response.status_code == 500  # ValueError raised internally
+
+
+@pytest.mark.anyio
+async def test_feedback_accepts_valid_like(client):
+    """Feedback should accept a valid Like (+1)."""
+    response = await client.post(
+        "/api/v1/rag/feedback",
+        json={"url": "https://example.com/test-article", "sentiment": 1}
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
