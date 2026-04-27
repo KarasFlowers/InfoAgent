@@ -6,18 +6,26 @@ import json
 import logging
 from datetime import datetime, timedelta
 
-from app.models.domain import DailySummary, NewsItem, UserFeedback, UserPersona, ChatMessage
+from app.models.domain import Board, DailySummary, NewsItem, UserFeedback, UserPersona, ChatMessage
 from app.models.schemas import DailySummaryResponse, HistoryStatItem, SummaryArchiveItem, SummaryHistoryResponse, SummaryItem, WeeklyRecapResponse
 
 logger = logging.getLogger(__name__)
 
 
 class DBService:
-    async def get_summary_by_date(self, session: AsyncSession, date_str: str) -> DailySummaryResponse | None:
+    async def get_summary_by_date(
+        self,
+        session: AsyncSession,
+        date_str: str,
+        board_id: int | None = None,
+    ) -> DailySummaryResponse | None:
         """
         Check if a summary already exists for a specific date (YYYY-MM-DD).
+        When board_id is provided, restricts to that board.
         """
         statement = select(DailySummary).where(DailySummary.date == date_str)
+        if board_id is not None:
+            statement = statement.where(DailySummary.board_id == board_id)
         result = await session.execute(statement)
         db_summary = result.scalars().first()
 
@@ -28,19 +36,15 @@ class DBService:
         news_result = await session.execute(news_statement)
         db_news_items = news_result.scalars().all()
 
-        feedback_statement = select(UserFeedback.article_url, UserFeedback.sentiment).where(
-            UserFeedback.article_url.in_([item.original_link for item in db_news_items])
-        )
-        feedback_result = await session.execute(feedback_statement)
-        feedback_rows = feedback_result.all()
-        feedback_map = {
-            url: next((sentiment for sentiment in sentiments if sentiment in (1, -1)), sentiments[-1])
-            for url, sentiments in (
-                (url, [sentiment for result_url, sentiment in feedback_rows if result_url == url])
-                for url in {item.original_link for item in db_news_items}
+        article_urls = [item.original_link for item in db_news_items]
+        feedback_map: dict[str, int] = {}
+        if article_urls:
+            feedback_statement = select(UserFeedback.article_url, UserFeedback.sentiment).where(
+                UserFeedback.article_url.in_(article_urls)
             )
-            if sentiments
-        }
+            feedback_result = await session.execute(feedback_statement)
+            # article_url is UNIQUE, so a simple dict is correct.
+            feedback_map = dict(feedback_result.all())
 
         top_news = []
         for item in db_news_items:
@@ -78,18 +82,21 @@ class DBService:
             recommendation_report=json.loads(db_summary.stats_json) if db_summary.stats_json else {}
         )
 
-    async def get_summary_archive(self, session: AsyncSession, limit: int = 7) -> list[SummaryArchiveItem]:
+    async def get_summary_archive(self, session: AsyncSession, limit: int = 7, board_id: int | None = None) -> list[SummaryArchiveItem]:
         """
         Return lightweight archive cards for recent summaries.
         """
-        history = await self.get_summary_history(session, limit=limit)
+        history = await self.get_summary_history(session, limit=limit, board_id=board_id)
         return history.archive_items
 
-    async def get_summary_history(self, session: AsyncSession, limit: int = 7) -> SummaryHistoryResponse:
+    async def get_summary_history(self, session: AsyncSession, limit: int = 7, board_id: int | None = None) -> SummaryHistoryResponse:
         """
         Return archive cards together with a lightweight weekly recap.
         """
-        statement = select(DailySummary).order_by(desc(DailySummary.date)).limit(limit)
+        statement = select(DailySummary)
+        if board_id is not None:
+            statement = statement.where(DailySummary.board_id == board_id)
+        statement = statement.order_by(desc(DailySummary.date)).limit(limit)
         result = await session.execute(statement)
         summaries = result.scalars().all()
 
@@ -190,12 +197,19 @@ class DBService:
             latest_date=archive_items[0].date,
         )
 
-    async def replace_summary(self, session: AsyncSession, summary: DailySummaryResponse) -> None:
+    async def replace_summary(
+        self,
+        session: AsyncSession,
+        summary: DailySummaryResponse,
+        board_id: int | None = None,
+    ) -> None:
         """
-        Replace an existing summary atomically.
+        Replace an existing summary atomically (scoped to board when provided).
         """
         try:
             statement = select(DailySummary).where(DailySummary.date == summary.date)
+            if board_id is not None:
+                statement = statement.where(DailySummary.board_id == board_id)
             result = await session.execute(statement)
             existing = result.scalars().first()
 
@@ -204,26 +218,37 @@ class DBService:
                 await session.delete(existing)
                 await session.flush()
 
-            await self._persist_summary(session, summary)
+            await self._persist_summary(session, summary, board_id=board_id)
             await session.commit()
         except SQLAlchemyError:
             await session.rollback()
             raise
 
-    async def save_summary(self, session: AsyncSession, summary: DailySummaryResponse) -> None:
+    async def save_summary(
+        self,
+        session: AsyncSession,
+        summary: DailySummaryResponse,
+        board_id: int | None = None,
+    ) -> None:
         """
         Save a newly generated LLM summary into the database.
         """
         try:
-            await self._persist_summary(session, summary)
+            await self._persist_summary(session, summary, board_id=board_id)
             await session.commit()
         except SQLAlchemyError:
             await session.rollback()
             raise
 
-    async def _persist_summary(self, session: AsyncSession, summary: DailySummaryResponse) -> None:
+    async def _persist_summary(
+        self,
+        session: AsyncSession,
+        summary: DailySummaryResponse,
+        board_id: int | None = None,
+    ) -> None:
         db_summary = DailySummary(
             date=summary.date,
+            board_id=board_id,
             overview=summary.overview,
             stats_json=json.dumps(summary.recommendation_report, ensure_ascii=False) if summary.recommendation_report else None
         )
@@ -242,19 +267,43 @@ class DBService:
             )
             session.add(db_news)
 
-    async def get_active_personas(self, session: AsyncSession) -> list:
+    async def get_active_personas(
+        self,
+        session: AsyncSession,
+        board_id: int | None = None,
+        include_global: bool = True,
+    ) -> list:
         """
-        Get all active user persona entries.
+        Get active user persona entries.
+
+        - ``board_id=None, include_global=True`` — returns all personas (legacy behavior).
+        - ``board_id=<int>, include_global=True`` — returns global (null board_id)
+          + personas for that board.
+        - ``board_id=<int>, include_global=False`` — returns only personas for that
+          specific board.
         """
         statement = select(UserPersona).where(UserPersona.is_active == True)
+        if board_id is not None:
+            if include_global:
+                statement = statement.where(
+                    (UserPersona.board_id == board_id) | (UserPersona.board_id.is_(None))
+                )
+            else:
+                statement = statement.where(UserPersona.board_id == board_id)
         result = await session.execute(statement)
         return result.scalars().all()
 
-    async def save_persona(self, session: AsyncSession, content: str, category: str = "instruction") -> None:
+    async def save_persona(
+        self,
+        session: AsyncSession,
+        content: str,
+        category: str = "instruction",
+        board_id: int | None = None,
+    ) -> None:
         """
-        Save a new persona entry.
+        Save a new persona entry (null board_id = global).
         """
-        db_persona = UserPersona(content=content, category=category)
+        db_persona = UserPersona(content=content, category=category, board_id=board_id)
         session.add(db_persona)
         await session.commit()
 
@@ -268,6 +317,59 @@ class DBService:
         if db_persona:
             await session.delete(db_persona)
             await session.commit()
+
+    async def get_personas_by_category(
+        self,
+        session: AsyncSession,
+        category: str,
+        board_id: int | None = None,
+        include_global: bool = True,
+    ) -> list:
+        """
+        Get active personas of a specific category, optionally scoped to a board.
+        """
+        statement = select(UserPersona).where(
+            UserPersona.is_active == True,
+            UserPersona.category == category,
+        )
+        if board_id is not None:
+            if include_global:
+                statement = statement.where(
+                    (UserPersona.board_id == board_id) | (UserPersona.board_id.is_(None))
+                )
+            else:
+                statement = statement.where(UserPersona.board_id == board_id)
+        result = await session.execute(statement)
+        return result.scalars().all()
+
+    async def get_explicit_preferences(
+        self,
+        session: AsyncSession,
+        board_id: int | None = None,
+        include_global: bool = True,
+    ) -> dict[str, list[str]]:
+        """
+        Return all explicit preference personas grouped by category.
+        Output: {"focus_topic": ["AI", ...], "block_topic": [...], "prefer_source": [...], "avoid_source": [...]}
+        """
+        categories = ["focus_topic", "block_topic", "prefer_source", "avoid_source"]
+        statement = select(UserPersona).where(
+            UserPersona.is_active == True,
+            UserPersona.category.in_(categories),
+        )
+        if board_id is not None:
+            if include_global:
+                statement = statement.where(
+                    (UserPersona.board_id == board_id) | (UserPersona.board_id.is_(None))
+                )
+            else:
+                statement = statement.where(UserPersona.board_id == board_id)
+        result = await session.execute(statement)
+        personas = result.scalars().all()
+        grouped: dict[str, list[str]] = {cat: [] for cat in categories}
+        for p in personas:
+            grouped[p.category].append(p.content)
+        return grouped
 
     async def get_available_dates(self, session: AsyncSession, limit: int = 7) -> list[str]:
         """
@@ -315,6 +417,96 @@ class DBService:
         await session.commit()
         logger.info("Cleanup removed %s summaries older than %s", len(old_summaries), threshold_date)
         return len(old_summaries)
+
+
+    # ------------------------------------------------------------------
+    # Board management
+    # ------------------------------------------------------------------
+
+    async def list_boards(self, session: AsyncSession, active_only: bool = True) -> list[Board]:
+        """Return all boards ordered by display_order."""
+        stmt = select(Board)
+        if active_only:
+            stmt = stmt.where(Board.is_active == True)
+        stmt = stmt.order_by(Board.display_order, Board.id)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_board_by_slug(self, session: AsyncSession, slug: str) -> Board | None:
+        stmt = select(Board).where(Board.slug == slug)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_board_by_id(self, session: AsyncSession, board_id: int) -> Board | None:
+        stmt = select(Board).where(Board.id == board_id)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_default_board(self, session: AsyncSession) -> Board | None:
+        """Return the is_default board, or fall back to the first active board."""
+        stmt = select(Board).where(Board.is_default == True).limit(1)
+        result = await session.execute(stmt)
+        board = result.scalars().first()
+        if board:
+            return board
+        stmt = select(Board).where(Board.is_active == True).order_by(Board.display_order, Board.id).limit(1)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def create_board(
+        self,
+        session: AsyncSession,
+        slug: str,
+        name: str,
+        icon: str = "",
+        description: str = "",
+        system_prompt: str = "",
+        source_type: str = "rss",
+        source_config: str = "{}",
+        display_order: int = 0,
+    ) -> Board:
+        board = Board(
+            slug=slug,
+            name=name,
+            icon=icon,
+            description=description,
+            system_prompt=system_prompt,
+            source_type=source_type,
+            source_config=source_config,
+            display_order=display_order,
+        )
+        session.add(board)
+        await session.commit()
+        await session.refresh(board)
+        return board
+
+    async def update_board(
+        self, session: AsyncSession, slug: str, updates: dict
+    ) -> Board | None:
+        board = await self.get_board_by_slug(session, slug)
+        if not board:
+            return None
+        allowed = {
+            "name", "icon", "description", "system_prompt",
+            "source_type", "source_config", "display_order", "is_active",
+        }
+        for key, value in updates.items():
+            if key in allowed and value is not None:
+                setattr(board, key, value)
+        await session.commit()
+        await session.refresh(board)
+        return board
+
+    async def delete_board(self, session: AsyncSession, slug: str) -> bool:
+        """
+        Soft delete (mark inactive). The default board cannot be deleted.
+        """
+        board = await self.get_board_by_slug(session, slug)
+        if not board or board.is_default:
+            return False
+        board.is_active = False
+        await session.commit()
+        return True
 
 
 db_service = DBService()

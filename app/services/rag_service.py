@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re
 import uuid
+from collections import OrderedDict
 from functools import lru_cache
 from typing import Generator, AsyncGenerator
 from urllib.parse import urljoin
@@ -23,7 +24,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from app.core.config import settings
 from app.core.url_safety import ensure_public_url_target
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,8 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=1)
 def get_bi_encoder() -> SentenceTransformer:
     """Load the Bi-Encoder for generating embeddings. Cached after first call."""
-    logger.info("Loading Bi-Encoder model")
-    return SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    logger.info("Loading Bi-Encoder model (BAAI/bge-m3)")
+    return SentenceTransformer("BAAI/bge-m3")
 
 @lru_cache(maxsize=1)
 def get_cross_encoder() -> CrossEncoder:
@@ -46,43 +47,148 @@ def get_cross_encoder() -> CrossEncoder:
 # In-memory ChromaDB vector store upgraded to Persistent
 _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_DIR)
 
-# A dict to track which URLs have already been ingested
-# url -> collection_name
+
+class _BoundedLRU(OrderedDict):
+    """Minimal dict-like bounded LRU cache. Evicts oldest entry once full."""
+
+    def __init__(self, maxsize: int):
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        super().__setitem__(key, value)
+        while len(self) > self._maxsize:
+            self.popitem(last=False)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+
+# A dict to track which URLs have already been ingested (mirrors Chroma state;
+# not capped because it is small and retention cleanup removes stale entries).
 _ingested_urls: dict[str, str] = {}
 
 # BM25 in-memory index: url -> (BM25Okapi, list[str])
-# We keep the raw chunks alongside. This is rebuilt every ingest.
+# Tied to live Chroma collections; rebuilt on demand.
 _bm25_indices: dict[str, tuple] = {}
 
 # Cached extracted article text and in-flight extraction tasks.
-_article_text_cache: dict[str, str] = {}
+_article_text_cache: _BoundedLRU = _BoundedLRU(maxsize=256)
 _article_text_tasks: dict[str, asyncio.Task[str]] = {}
 
 # Cached article overviews so reopening the panel feels instant.
-_article_overview_cache: dict[str, str] = {}
+_article_overview_cache: _BoundedLRU = _BoundedLRU(maxsize=256)
 
 # Cached content quality assessments.
-_article_quality_cache: dict[str, dict] = {}
+_article_quality_cache: _BoundedLRU = _BoundedLRU(maxsize=256)
 
-# On startup, load existing collections so we don't lose track of them
-# On startup, load existing collections so we don't lose track of them
-try:
-    existing_collections = _chroma_client.list_collections()
-    for coll_obj in existing_collections:
-        coll_name = coll_obj.name
+# -------------------------------------------------------------------
+# Background Ingestion Pipeline
+# -------------------------------------------------------------------
+
+# URL queue for the background workers (capped to avoid unbounded memory).
+_ingest_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=200)
+
+# Tracks per-URL ingestion state visible to the API layer.
+# url -> {"status": "pending"|"running"|"done"|"failed",
+#          "chunks": int, "error": str|None}
+_ingest_status: dict[str, dict] = {}
+
+
+def enqueue_for_ingest(urls: list[str]) -> int:
+    """
+    Enqueue URLs for background ingestion.  Skips URLs that are already
+    ingested or already queued.  Returns the number of newly enqueued URLs.
+    """
+    enqueued = 0
+    for url in urls:
+        if url in _ingested_urls:
+            continue
+        if url in _ingest_status and _ingest_status[url]["status"] in ("pending", "running"):
+            continue
+        _ingest_status[url] = {"status": "pending", "chunks": 0, "error": None}
         try:
-            coll = _chroma_client.get_collection(name=coll_name)
-            metadata = coll.metadata
-            if metadata and "url" in metadata:
-                _ingested_urls[metadata["url"]] = coll_name
-            else:
-                logger.warning("Collection %s missing url metadata", coll_name)
-        except Exception as e:
-            logger.exception("Error loading metadata for collection %s", coll_name)
+            _ingest_queue.put_nowait(url)
+            enqueued += 1
+        except asyncio.QueueFull:
+            logger.warning("Background ingest queue full, dropping %s", url)
+            _ingest_status.pop(url, None)
+    if enqueued:
+        logger.info("Enqueued %d URLs for background ingestion", enqueued)
+    return enqueued
+
+
+def get_ingest_status(url: str) -> dict | None:
+    """Return the ingestion status dict for *url*, or None if unknown."""
+    if url in _ingested_urls:
+        try:
+            coll = _chroma_client.get_collection(_ingested_urls[url])
+            chunks = coll.count()
+        except Exception:
+            chunks = 0
+        return {"status": "done", "chunks": chunks, "error": None}
+    return _ingest_status.get(url)
+
+
+async def ingest_worker_loop(worker_id: int = 0) -> None:
+    """
+    Long-running coroutine that pulls URLs from the queue and ingests them.
+    Send ``None`` into the queue to gracefully shut down.
+    """
+    logger.info("Background ingest worker-%d started", worker_id)
+    while True:
+        url = await _ingest_queue.get()
+        if url is None:
+            # Shutdown sentinel
+            _ingest_queue.task_done()
+            logger.info("Background ingest worker-%d shutting down", worker_id)
+            return
+        try:
+            _ingest_status[url] = {"status": "running", "chunks": 0, "error": None}
+            result = await ingest(url)
+            _ingest_status[url] = {
+                "status": "done",
+                "chunks": result["chunks"],
+                "error": None,
+            }
+            logger.info("Background ingested %s (%d chunks)", url, result["chunks"])
+        except Exception as exc:
+            logger.warning("Background ingest failed for %s: %s", url, exc)
+            _ingest_status[url] = {
+                "status": "failed",
+                "chunks": 0,
+                "error": str(exc),
+            }
+        finally:
+            _ingest_queue.task_done()
+
+
+# On startup, load existing BGE-M3 collections so we don't lose track of them.
+# We ignore old collections (e.g. 384-dimensional ones) as they are incompatible.
+try:
+    for coll_obj in _chroma_client.list_collections():
+        if not coll_obj.name.startswith("rag-m3-"):
+            continue
+        metadata = getattr(coll_obj, "metadata", None)
+        if metadata and "url" in metadata:
+            _ingested_urls[metadata["url"]] = coll_obj.name
+except Exception:
+    logger.warning("Collection %s missing url metadata", coll_obj.name)
 except Exception:
     logger.exception("Error listing existing ChromaDB collections")
 
 
+# ... rest of the code remains the same ...
 
 def _build_bm25_index(chunks: list[str]) -> tuple[BM25Okapi, list[str]]:
     tokenized = [chunk.lower().split() for chunk in chunks]
@@ -376,29 +482,36 @@ async def stream_article_overview(url: str) -> AsyncGenerator[str, None]:
 
     context = await _prepare_overview_context(url)
 
-    client = OpenAI(
+    client = AsyncOpenAI(
         api_key=settings.DEEPSEEK_API_KEY,
         base_url=settings.DEEPSEEK_BASE_URL,
     )
 
-    def run_stream():
-        return client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": _build_article_overview_prompt(context)}],
-            stream=True,
-            max_tokens=700,
-            temperature=0.3,
-        )
+    from app.services.metrics_service import metrics_service
+    
+    stream = await client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": _build_article_overview_prompt(context)}],
+        stream=True,
+        stream_options={"include_usage": True},
+        max_tokens=700,
+        temperature=0.3,
+    )
 
-    stream = await asyncio.to_thread(run_stream)
     full_response = ""
-
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
+    async for chunk in stream:
+        # Check if usage is in the chunk (OpenAI spec)
+        if chunk.usage:
+            await metrics_service.record_tokens(
+                chunk.usage.prompt_tokens, 
+                chunk.usage.completion_tokens
+            )
+            continue
+            
+        if chunk.choices and chunk.choices[0].delta.content:
+            delta = chunk.choices[0].delta.content
             full_response += delta
             yield delta
-            await asyncio.sleep(0)
 
     if not full_response:
         raise RuntimeError("Failed to generate article overview.")
@@ -421,9 +534,9 @@ async def generate_article_overview(url: str) -> str:
 def _collection_name_for(url: str) -> str:
     """Generate a safe collection name from a URL."""
     # ChromaDB collection names must be alphanumeric + hyphens, 3-63 chars
-    safe = re.sub(r"[^a-zA-Z0-9]", "-", url)[-55:]
+    safe = re.sub(r"[^a-zA-Z0-9]", "-", url)[-52:]
     safe = safe.strip("-")
-    return f"rag-{safe}"
+    return f"rag-m3-{safe}"
 
 
 async def ingest(url: str) -> dict:
@@ -495,10 +608,10 @@ async def delete_collections_by_urls(urls: list[str]) -> int:
             _article_text_cache.pop(url, None)
             _article_overview_cache.pop(url, None)
             deleted_count += 1
-        except Exception as e:
-            # Collection might not exist or already deleted
-            pass
-            
+        except Exception:
+            # Collection might not exist or already deleted; treat as no-op but log at debug.
+            logger.debug("Collection for %s not deleted (missing or already removed)", url)
+
     logger.info("Cleanup deleted %s RAG collections from ChromaDB", deleted_count)
     return deleted_count
 
@@ -506,6 +619,45 @@ async def delete_collections_by_urls(urls: list[str]) -> int:
 # -------------------------------------------------------------------
 # Step 4: Two-Stage Query (Recall + Rerank)
 # -------------------------------------------------------------------
+
+async def _hyde_rewrite(question: str) -> str:
+    """
+    HyDE: ask the LLM to generate a short hypothetical answer.
+    This answer will be embedded alongside the original query to
+    improve semantic recall for vague or short questions.
+    """
+    prompt = (
+        "请直接给出一段简短的假设性回答（50-100 字），不要加前缀或解释：\n\n"
+        f"问题：{question}"
+    )
+    try:
+        client = AsyncOpenAI(
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+        )
+        from app.services.metrics_service import metrics_service
+        
+        resp = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            temperature=0.7,
+        )
+        
+        if resp.usage:
+            await metrics_service.record_tokens(
+                resp.usage.prompt_tokens, 
+                resp.usage.completion_tokens
+            )
+            
+        hyde_text = (resp.choices[0].message.content or "").strip()
+        if hyde_text:
+            logger.debug("HyDE hypothesis: %s", hyde_text[:80])
+            return hyde_text
+    except Exception:
+        logger.warning("HyDE rewrite failed, falling back to raw query", exc_info=True)
+    return ""
+
 
 async def _recall_and_rerank(question: str, url: str, top_k_recall: int = 20, top_k_final: int = 3) -> list[dict]:
     """
@@ -524,7 +676,20 @@ async def _recall_and_rerank(question: str, url: str, top_k_recall: int = 20, to
     
     # --- PATH A: Bi-Encoder (Vector) Recall ---
     bi_encoder = get_bi_encoder()
-    q_embedding = bi_encoder.encode(question).tolist()
+
+    # HyDE: fuse original query embedding with hypothetical-answer embedding
+    if settings.RAG_HYDE_ENABLED:
+        hyde_text = await _hyde_rewrite(question)
+        if hyde_text:
+            raw_embs = await asyncio.to_thread(
+                bi_encoder.encode, [question, hyde_text], show_progress_bar=False
+            )
+            q_embedding = ((raw_embs[0] + raw_embs[1]) / 2).tolist()
+        else:
+            q_embedding = (await asyncio.to_thread(bi_encoder.encode, [question], show_progress_bar=False))[0].tolist()
+    else:
+        q_embedding = bi_encoder.encode(question).tolist()
+
     vector_results = collection.query(
         query_embeddings=[q_embedding],
         n_results=min(top_k_recall, collection.count()),
@@ -637,16 +802,20 @@ async def _recall_and_rerank(question: str, url: str, top_k_recall: int = 20, to
 # -------------------------------------------------------------------
 
 def _build_rag_prompt(question: str, context_chunks: list[str]) -> str:
-    context = "\n\n---\n\n".join(context_chunks)
-    return f"""你是一个专业的新闻深度分析助手。以下是从原文中检索到的最相关段落，请仅基于这些内容回答用户的问题。如果内容中没有相关信息，请直接告知用户。
+    numbered = "\n\n".join(
+        f"[{i + 1}] {chunk}" for i, chunk in enumerate(context_chunks)
+    )
+    return f"""你是一个专业的新闻深度分析助手。以下是从原文中检索到的最相关段落（已编号），请仅基于这些内容回答用户的问题。
+在回答中，当你引用了某段内容时，请在相应语句末尾用方括号标注来源编号，例如 [1]、[2]。
+如果内容中没有相关信息，请直接告知用户。
 
 【原文相关段落】
-{context}
+{numbered}
 
 【用户问题】
 {question}
 
-请用简洁流畅的中文回答："""
+请用简洁流畅的中文回答（记得标注引用编号）："""
 
 
 async def query_stream(question: str, url: str) -> AsyncGenerator[str, None]:
@@ -668,7 +837,17 @@ async def query_stream(question: str, url: str) -> AsyncGenerator[str, None]:
     # Extract just the chunks for the prompt
     top_chunks = [r["chunk"] for r in ranked_results]
     
-    # Send scoring metadata as a special JSON packet
+    # Build citations list (1-indexed, matching prompt numbering)
+    citations = [
+        {
+            "index": i + 1,
+            "preview": r["chunk"][:120].replace("\n", " "),
+            "source": r.get("source", "semantic"),
+        }
+        for i, r in enumerate(ranked_results)
+    ]
+
+    # Send scoring + citation metadata as a special JSON packet
     import json
     metadata = {
         "type": "scoring_explain",
@@ -682,38 +861,43 @@ async def query_stream(question: str, url: str) -> AsyncGenerator[str, None]:
                 # Show first 40 chars of chunk as a preview
                 "preview": r["chunk"][:40] + "..."
             } for r in ranked_results
-        ]
+        ],
+        "citations": citations,
     }
     yield f"[METADATA]{json.dumps(metadata)}[/METADATA]"
     
     prompt = _build_rag_prompt(question, top_chunks)
-    
-    # Use async streaming client
-    client = OpenAI(
+
+    # Use async streaming client to avoid blocking the event loop
+    client = AsyncOpenAI(
         api_key=settings.DEEPSEEK_API_KEY,
         base_url=settings.DEEPSEEK_BASE_URL,
     )
+
+    from app.services.metrics_service import metrics_service
     
-    # Run sync OpenAI client in a thread pool using asyncio to prevent blocking
-    def run_stream():
-        return client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            stream=True,
-            max_tokens=800,
-        )
-        
-    stream = await asyncio.to_thread(run_stream)
-    
+    stream = await client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
+        stream_options={"include_usage": True},
+        max_tokens=800,
+    )
+
     full_response = ""
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
+    async for chunk in stream:
+        if chunk.usage:
+            await metrics_service.record_tokens(
+                chunk.usage.prompt_tokens, 
+                chunk.usage.completion_tokens
+            )
+            continue
+            
+        if chunk.choices and chunk.choices[0].delta.content:
+            delta = chunk.choices[0].delta.content
             full_response += delta
             yield delta
-            await asyncio.sleep(0)
-            
+
     # Save AI response
     if full_response:
-        from app.services.chat_history_service import save_chat_message
         await save_chat_message(url, "ai", full_response)

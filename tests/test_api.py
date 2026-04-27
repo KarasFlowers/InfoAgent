@@ -66,12 +66,13 @@ async def test_rag_history_returns_empty(client):
 
 @pytest.mark.anyio
 async def test_feedback_rejects_invalid_sentiment(client):
-    """Feedback should reject invalid sentiment values."""
+    """Feedback should reject invalid sentiment values at the schema level."""
     response = await client.post(
         "/api/v1/rag/feedback",
         json={"url": "https://example.com", "sentiment": 5}
     )
-    assert response.status_code == 500  # ValueError raised internally
+    # Pydantic's Literal[1, -1, 0] validation triggers a 422 Unprocessable Entity.
+    assert response.status_code == 422
 
 
 @pytest.mark.anyio

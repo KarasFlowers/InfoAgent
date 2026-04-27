@@ -25,6 +25,13 @@ WORKDIR /app
 # Copy only the installed dependencies from builder
 COPY --from=builder /install /usr/local
 
+# Pre-warm sentence-transformers weights so the first user request is fast.
+# The models are the exact ones used by app/services/rag_service.py.
+ENV HF_HOME=/opt/hf-cache \
+    SENTENCE_TRANSFORMERS_HOME=/opt/hf-cache \
+    TRANSFORMERS_OFFLINE=0
+RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('BAAI/bge-m3'); CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+
 # Copy the rest of the application
 COPY . .
 

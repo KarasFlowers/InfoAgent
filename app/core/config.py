@@ -67,8 +67,24 @@ class Settings(BaseSettings):
     # Retention Policy
     HISTORY_DAYS_TO_KEEP: int = 7
     
+    # Email Push Settings
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 465
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM: str | None = None
+    EMAIL_SUBSCRIBERS: list[str] = []
+    DAILY_PUSH_TIME: str = "08:00"  # Format HH:MM
+    
     # RAG Vector Store
     CHROMA_DB_DIR: str = "./data/chroma"
+
+    # Background Ingestion Pipeline
+    RAG_BACKGROUND_INGEST_ENABLED: bool = True
+    RAG_BACKGROUND_INGEST_WORKERS: int = 2
+
+    # HyDE (Hypothetical Document Embedding) query rewriting
+    RAG_HYDE_ENABLED: bool = True
     
     # Redis Cache
     REDIS_URL: str = "redis://localhost:6379"

@@ -16,7 +16,14 @@ from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 from app.core.url_safety import validate_public_url
 from app.services.chat_history_service import get_chat_history
 from app.services.learning_service import record_feedback
-from app.services.rag_service import _ingested_urls, _prepare_overview_context, ingest, query_stream, stream_article_overview
+from app.services.rag_service import (
+    _ingested_urls,
+    _prepare_overview_context,
+    get_ingest_status,
+    ingest,
+    query_stream,
+    stream_article_overview,
+)
 
 logger = logging.getLogger(__name__)
 rag_router = APIRouter(prefix="/rag", tags=["RAG"])
@@ -56,14 +63,46 @@ class FeedbackRequest(PublicUrlRequest):
     sentiment: Literal[1, -1, 0]
 
 
+@rag_router.get("/ingest_status")
+async def check_ingest_status(url: AnyHttpUrl = Query(...)):
+    """Return the background ingestion status for a URL."""
+    status = get_ingest_status(str(url))
+    if status is None:
+        return {"status": "unknown"}
+    return status
+
+
 @rag_router.post("/ingest")
 async def ingest_article(req: IngestRequest):
     """
-    Scrape the given URL and store its chunks + embeddings in the vector DB.
-    Returns the number of chunks stored.
+    Smart ingest endpoint (fallback for background pipeline).
+
+    * If the URL is already ingested → return instantly.
+    * If background status is 'pending' or 'running' → poll until done
+      (up to ~30 s) then return the result.
+    * If background status is 'failed' or unknown → synchronous ingest.
     """
+    import asyncio
     url = str(req.url)
 
+    # Fast path: already indexed
+    bg = get_ingest_status(url)
+    if bg and bg["status"] == "done":
+        quality = {"score": 1.0, "verdict": "good", "details": ""}
+        return {"status": "ok", "chunks": bg["chunks"], "quality": quality}
+
+    # Wait for background worker if it's in progress
+    if bg and bg["status"] in ("pending", "running"):
+        for _ in range(60):          # ~30 seconds max
+            await asyncio.sleep(0.5)
+            bg = get_ingest_status(url)
+            if bg and bg["status"] == "done":
+                quality = {"score": 1.0, "verdict": "good", "details": ""}
+                return {"status": "ok", "chunks": bg["chunks"], "quality": quality}
+            if bg and bg["status"] == "failed":
+                break  # fall through to synchronous retry
+
+    # Synchronous fallback (background was not running, or failed)
     try:
         result = await ingest(url)
         chunk_count = result["chunks"]

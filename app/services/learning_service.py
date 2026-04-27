@@ -16,7 +16,7 @@ from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.domain import UserFeedback, NewsItem
-from app.core.db import engine
+from app.core.db import AsyncSessionLocal
 
 
 def _normalize_vector(vector: np.ndarray) -> np.ndarray:
@@ -35,7 +35,7 @@ async def record_feedback(url: str, sentiment: int) -> bool:
     if sentiment not in (1, -1, 0):
         raise ValueError("Sentiment must be 1 (Like), -1 (Dislike), or 0 (Clear).")
 
-    async with AsyncSession(engine) as session:
+    async with AsyncSessionLocal() as session:
         statement = select(UserFeedback).where(UserFeedback.article_url == url)
         result = await session.execute(statement)
         existing_rows = result.scalars().all()
@@ -101,7 +101,7 @@ async def get_user_feedback_profiles() -> tuple[np.ndarray | None, np.ndarray | 
     Returns:
         (positive_centroid, negative_centroid), each can be None.
     """
-    async with AsyncSession(engine) as session:
+    async with AsyncSessionLocal() as session:
         statement = select(UserFeedback.article_url, UserFeedback.sentiment)
         result = await session.execute(statement)
         rows = result.all()
@@ -170,11 +170,11 @@ async def get_inferred_interests(session: AsyncSession, limit: int = 5) -> list[
             categories[cat] = categories.get(cat, 0) + 1
         
         try:
-            item_tags = json.loads(tags_json)
-            for t in item_tags:
-                tags[t] = tags.get(t, 0) + 1
-        except:
+            item_tags = json.loads(tags_json) if tags_json else []
+        except (json.JSONDecodeError, TypeError):
             continue
+        for t in item_tags:
+            tags[t] = tags.get(t, 0) + 1
             
     # Sort and pick top
     sorted_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)
@@ -189,45 +189,95 @@ async def get_inferred_interests(session: AsyncSession, limit: int = 5) -> list[
     return results
 
 
-async def rerank_summary_items(items: list) -> list:
+async def rerank_summary_items(items: list, session: AsyncSession | None = None) -> list:
     """
-    Rerank SummaryItem list by user preference vectors.
+    Rerank SummaryItem list by:
+      1. Explicit preferences (focus/block topics, prefer/avoid sources)
+      2. User preference vectors (like/dislike feedback)
 
-    For each item, computes:
-        persona_score = cos_sim(positive_centroid, item_emb) * 0.7
-                      - cos_sim(negative_centroid, item_emb) * 0.3
+    Blocked topics are completely removed from the list.
+    Focus topics receive a +0.3 bonus; avoided sources get a -0.2 penalty.
 
     Returns items sorted by persona_score descending.
-    If no feedback data exists, returns original order with no scores.
+    If no feedback or preferences exist, returns original order.
     """
-    positive_centroid, negative_centroid = await get_user_feedback_profiles()
-
-    if positive_centroid is None and negative_centroid is None:
-        return items
-
     if not items:
         return items
 
-    from app.services.rag_service import get_bi_encoder
-    bi_encoder = get_bi_encoder()
+    # --- Phase 1: Explicit preferences ---
+    prefs: dict[str, list[str]] = {
+        "focus_topic": [], "block_topic": [],
+        "prefer_source": [], "avoid_source": [],
+    }
 
-    # Build text representations for embedding
-    texts = []
-    for item in items:
-        kp_text = " ".join(item.key_points) if item.key_points else ""
-        texts.append(f"{item.headline} {kp_text}")
+    if session:
+        try:
+            from app.services.db_service import db_service
+            prefs = await db_service.get_explicit_preferences(session)
+        except Exception:
+            pass
 
-    embeddings = bi_encoder.encode(texts)
+    block_topics_lower = {t.lower() for t in prefs["block_topic"]}
+    focus_topics_lower = {t.lower() for t in prefs["focus_topic"]}
+    prefer_sources_lower = {s.lower() for s in prefs["prefer_source"]}
+    avoid_sources_lower = {s.lower() for s in prefs["avoid_source"]}
+
+    # Filter out blocked items
+    if block_topics_lower:
+        filtered = []
+        for item in items:
+            item_cat = (item.category or "").lower()
+            item_tags = {(t.lstrip("#").strip()).lower() for t in (item.tags or [])}
+            item_signals = item_tags | {item_cat}
+            if item_signals & block_topics_lower:
+                continue
+            filtered.append(item)
+        items = filtered
+
+    # --- Phase 2: Embedding-based reranking ---
+    positive_centroid, negative_centroid = await get_user_feedback_profiles()
+
+    has_vectors = positive_centroid is not None or negative_centroid is not None
+    has_prefs = any(prefs[k] for k in prefs)
+
+    if not has_vectors and not has_prefs:
+        return items
+
+    if has_vectors:
+        from app.services.rag_service import get_bi_encoder
+        bi_encoder = get_bi_encoder()
+
+        texts = []
+        for item in items:
+            kp_text = " ".join(item.key_points) if item.key_points else ""
+            texts.append(f"{item.headline} {kp_text}")
+
+        embeddings = bi_encoder.encode(texts)
 
     scored_items = []
     for i, item in enumerate(items):
-        emb = _normalize_vector(embeddings[i])
         score = 0.0
 
-        if positive_centroid is not None:
-            score += float(np.dot(positive_centroid, emb)) * 0.7
-        if negative_centroid is not None:
-            score -= float(np.dot(negative_centroid, emb)) * 0.3
+        # Vector-based score
+        if has_vectors:
+            emb = _normalize_vector(embeddings[i])
+            if positive_centroid is not None:
+                score += float(np.dot(positive_centroid, emb)) * 0.7
+            if negative_centroid is not None:
+                score -= float(np.dot(negative_centroid, emb)) * 0.3
+
+        # Explicit preference adjustments
+        item_cat = (item.category or "").lower()
+        item_tags = {(t.lstrip("#").strip()).lower() for t in (item.tags or [])}
+        item_signals = item_tags | {item_cat}
+        item_source = (item.source or "").lower()
+
+        if item_signals & focus_topics_lower:
+            score += 0.3
+        if item_source in prefer_sources_lower:
+            score += 0.15
+        if item_source in avoid_sources_lower:
+            score -= 0.2
 
         item.persona_score = round(score, 3)
         scored_items.append(item)

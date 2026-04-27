@@ -4,6 +4,8 @@ let isIngesting = false;
 let currentQueryController = null;
 let currentOverviewController = null;
 let latestHistoryArchive = [];
+let currentBoardSlug = null;
+let availableBoards = [];
 
 const SUMMARY_LOADING_TEXT = 'AI 编辑正在努力生成今日简报，这可能需要几十秒...';
 
@@ -14,7 +16,8 @@ const ICONS = {
     dislike: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm7-13h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>'
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    await initBoards();
     fetchSummary();
     setupRagPanel();
     setupHistoryPanel();
@@ -73,11 +76,350 @@ function computeSourceStats(items) {
     return stats;
 }
 
+async function initBoards() {
+    try {
+        const res = await fetch('/api/v1/boards');
+        availableBoards = await res.json();
+        
+        const container = document.getElementById('board-tabs');
+        if (availableBoards.length === 0) return;
+
+        // Determine initial active board from localStorage or first default
+        const saved = localStorage.getItem('infoagent_board');
+        if (saved && availableBoards.find(b => b.slug === saved)) {
+            currentBoardSlug = saved;
+        } else {
+            const def = availableBoards.find(b => b.is_default);
+            currentBoardSlug = def ? def.slug : availableBoards[0].slug;
+        }
+
+        container.style.display = 'flex';
+        renderBoardTabs();
+    } catch (e) {
+        console.error("Failed to initialize boards", e);
+    }
+}
+
+function renderBoardTabs() {
+    const container = document.getElementById('board-tabs');
+    let html = '';
+    for (const b of availableBoards) {
+        const isActive = b.slug === currentBoardSlug ? 'active' : '';
+        html += `<div class="board-tab-wrapper ${isActive}">
+            <button class="board-tab" onclick="switchBoard('${b.slug}')">
+                ${b.icon} ${b.name}
+            </button>
+            <button class="board-edit-btn" onclick="openBoardModal('${b.slug}')" title="设置此板块">⚙️</button>
+        </div>`;
+    }
+    html += `<button class="board-add-btn" onclick="openBoardModal()" title="新建板块">➕ 添加板块</button>`;
+    container.innerHTML = html;
+}
+
+function switchBoard(slug) {
+    if (slug === currentBoardSlug) return;
+    currentBoardSlug = slug;
+    localStorage.setItem('infoagent_board', slug);
+    renderBoardTabs();
+    
+    // Close panels if open
+    document.getElementById('persona-panel').classList.remove('open');
+    document.getElementById('insights-modal').style.display = 'none';
+    
+    fetchSummary();
+}
+
+// ==========================================
+// Board Management Logic
+// ==========================================
+
+let wizardMessages = [];           // conversation history
+let wizardLastConfig = null;       // most recent suggested config
+let wizardIsLoading = false;
+
+function switchBoardMode(mode) {
+    // Toggle active tab
+    document.querySelectorAll('#board-mode-tabs .board-mode-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+    const wizardPanel = document.getElementById('board-wizard-panel');
+    const form = document.getElementById('board-form');
+    const wizardFooter = document.getElementById('board-wizard-footer');
+    if (mode === 'wizard') {
+        wizardPanel.style.display = 'block';
+        form.style.display = 'none';
+        wizardFooter.style.display = 'flex';
+    } else {
+        wizardPanel.style.display = 'none';
+        form.style.display = 'block';
+        wizardFooter.style.display = 'none';
+    }
+}
+
+function resetWizard() {
+    wizardMessages = [];
+    wizardLastConfig = null;
+    wizardIsLoading = false;
+    const messagesDiv = document.getElementById('wizard-messages');
+    if (messagesDiv) {
+        messagesDiv.innerHTML = `<div class="wizard-msg wizard-msg--ai">👋 告诉我你想要一个什么样的板块，比如：<br>"我想每天学 5 个英语商务单词"，<br>"汇总国内外顶级 AI 实验室的最新论文"，<br>"每天给我一条冷门心理学知识"...</div>`;
+    }
+    const applyRow = document.getElementById('wizard-apply-row');
+    if (applyRow) applyRow.style.display = 'none';
+    const input = document.getElementById('wizard-input');
+    if (input) { input.value = ''; input.disabled = false; }
+    const btn = document.getElementById('wizard-submit-btn');
+    if (btn) { btn.disabled = false; btn.textContent = '发送'; }
+}
+
+function appendWizardMsg(role, content) {
+    const container = document.getElementById('wizard-messages');
+    const div = document.createElement('div');
+    div.className = `wizard-msg wizard-msg--${role}`;
+    if (role === 'ai' && typeof marked !== 'undefined') {
+        div.innerHTML = marked.parse(content);
+    } else {
+        div.textContent = content;
+    }
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    return div;
+}
+
+async function submitWizard(event) {
+    event.preventDefault();
+    if (wizardIsLoading) return;
+    const input = document.getElementById('wizard-input');
+    const text = input.value.trim();
+    if (!text) return;
+
+    // Append user message
+    appendWizardMsg('user', text);
+    wizardMessages.push({ role: 'user', content: text });
+    input.value = '';
+
+    // Loading state
+    wizardIsLoading = true;
+    const btn = document.getElementById('wizard-submit-btn');
+    btn.disabled = true;
+    btn.textContent = '思考中...';
+    const loadingMsg = appendWizardMsg('ai', '🧠 正在为你设计板块...');
+
+    try {
+        const res = await fetch('/api/v1/boards/wizard', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: wizardMessages }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        // Remove loading placeholder
+        loadingMsg.remove();
+
+        // Show AI reply
+        appendWizardMsg('ai', data.reply || '（无回复）');
+        wizardMessages.push({ role: 'assistant', content: data.reply || '' });
+
+        if (data.ready && data.config) {
+            wizardLastConfig = data.config;
+            // Summary preview
+            const cfg = data.config;
+            const preview = `**推荐配置：**
+- 名称：${cfg.icon} ${cfg.name}
+- 标识：\`${cfg.slug}\`
+- 类型：${cfg.source_type === 'rss' ? 'RSS 订阅源' : '纯 LLM 生成'}
+${cfg.source_type === 'rss' && cfg.rss_urls.length > 0 ? `- 源：\n${cfg.rss_urls.map(u => '  - ' + u).join('\n')}` : ''}`;
+            appendWizardMsg('ai', preview);
+            document.getElementById('wizard-apply-row').style.display = 'flex';
+        } else {
+            wizardLastConfig = null;
+            document.getElementById('wizard-apply-row').style.display = 'none';
+        }
+    } catch (e) {
+        loadingMsg.remove();
+        appendWizardMsg('ai', `❌ 出错了：${e.message}`);
+    } finally {
+        wizardIsLoading = false;
+        btn.disabled = false;
+        btn.textContent = '发送';
+        input.focus();
+    }
+}
+
+function applyWizardConfig() {
+    if (!wizardLastConfig) return;
+    const cfg = wizardLastConfig;
+    document.getElementById('board-slug').value = cfg.slug || '';
+    document.getElementById('board-slug').disabled = false;
+    document.getElementById('board-name').value = cfg.name || '';
+    document.getElementById('board-icon').value = cfg.icon || '📌';
+    document.getElementById('board-source-type').value = cfg.source_type || 'rss';
+    document.getElementById('board-prompt').value = cfg.system_prompt || '';
+    if (cfg.source_type === 'rss' && cfg.rss_urls) {
+        document.getElementById('board-rss-urls').value = cfg.rss_urls.join('\n');
+    } else {
+        document.getElementById('board-rss-urls').value = '';
+    }
+    toggleBoardSourceConfig();
+    switchBoardMode('manual');
+}
+
+function openBoardModal(slug = null) {
+    const modal = document.getElementById('board-modal');
+    if (!modal) return;
+    const title = document.getElementById('board-modal-title');
+    const isEditInput = document.getElementById('board-is-edit');
+    const deleteBtn = document.getElementById('board-delete-btn');
+    const originalSlugInput = document.getElementById('board-original-slug');
+    const modeTabs = document.getElementById('board-mode-tabs');
+    
+    // reset form and wizard state
+    document.getElementById('board-form').reset();
+    document.getElementById('board-rss-group').style.display = 'block';
+    resetWizard();
+
+    if (slug) {
+        // Edit mode - jump straight to manual, hide wizard tabs
+        title.textContent = '设置板块';
+        isEditInput.value = 'true';
+        originalSlugInput.value = slug;
+        deleteBtn.style.display = 'inline-block';
+        modeTabs.style.display = 'none';
+        switchBoardMode('manual');
+        
+        const b = availableBoards.find(x => x.slug === slug);
+        if (b) {
+            document.getElementById('board-slug').value = b.slug;
+            document.getElementById('board-slug').disabled = true;
+            document.getElementById('board-name').value = b.name;
+            document.getElementById('board-icon').value = b.icon;
+            document.getElementById('board-source-type').value = b.source_type || 'rss';
+            document.getElementById('board-prompt').value = b.system_prompt || '';
+            
+            if (b.source_type === 'rss') {
+                const urls = b.source_config?.rss_urls || [];
+                document.getElementById('board-rss-urls').value = urls.join('\n');
+            }
+            toggleBoardSourceConfig();
+            
+            if (b.is_default) {
+                deleteBtn.style.display = 'none';
+            }
+        }
+    } else {
+        // Add mode - start with wizard
+        title.textContent = '新建板块';
+        isEditInput.value = 'false';
+        originalSlugInput.value = '';
+        deleteBtn.style.display = 'none';
+        modeTabs.style.display = 'flex';
+        document.getElementById('board-slug').disabled = false;
+        document.getElementById('board-source-type').value = 'rss';
+        toggleBoardSourceConfig();
+        switchBoardMode('wizard');
+    }
+    
+    modal.classList.add('active');
+}
+
+function closeBoardModal() {
+    const modal = document.getElementById('board-modal');
+    if (modal) modal.classList.remove('active');
+}
+
+function toggleBoardSourceConfig() {
+    const type = document.getElementById('board-source-type').value;
+    const rssGroup = document.getElementById('board-rss-group');
+    if (type === 'rss') {
+        rssGroup.style.display = 'block';
+    } else {
+        rssGroup.style.display = 'none';
+    }
+}
+
+async function saveBoard(event) {
+    event.preventDefault();
+    const isEdit = document.getElementById('board-is-edit').value === 'true';
+    const originalSlug = document.getElementById('board-original-slug').value;
+    
+    const slug = document.getElementById('board-slug').value.trim();
+    const name = document.getElementById('board-name').value.trim();
+    const icon = document.getElementById('board-icon').value.trim();
+    const sourceType = document.getElementById('board-source-type').value;
+    const prompt = document.getElementById('board-prompt').value.trim();
+    
+    const payload = {
+        slug: slug,
+        name: name,
+        icon: icon,
+        source_type: sourceType,
+        system_prompt: prompt || null,
+        source_config: {}
+    };
+    
+    if (sourceType === 'rss') {
+        const rawUrls = document.getElementById('board-rss-urls').value;
+        const urls = rawUrls.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+        payload.source_config = { rss_urls: urls };
+    }
+    
+    try {
+        const url = isEdit ? `/api/v1/boards/${originalSlug}` : '/api/v1/boards';
+        const method = isEdit ? 'PUT' : 'POST';
+        
+        const res = await fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || '保存失败');
+        }
+        
+        closeBoardModal();
+        if (!isEdit) {
+            currentBoardSlug = slug; // Switch to new board
+            localStorage.setItem('infoagent_board', slug);
+        }
+        await initBoards();
+        if (!isEdit) fetchSummary();
+    } catch (e) {
+        alert("保存板块出错: " + e.message);
+    }
+}
+
+async function deleteBoard() {
+    const slug = document.getElementById('board-original-slug').value;
+    if (!confirm('确定要删除此板块吗？归档记录也会一起清理。')) return;
+    
+    try {
+        const res = await fetch(`/api/v1/boards/${slug}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || '删除失败');
+        }
+        
+        closeBoardModal();
+        currentBoardSlug = null;
+        localStorage.removeItem('infoagent_board');
+        await initBoards();
+        fetchSummary();
+    } catch (e) {
+        alert("删除板块出错: " + e.message);
+    }
+}
+
 async function fetchSummary(force = false, date = null) {
     let url = '/api/v1/summary';
     const params = [];
     if (force) params.push('force=true');
     if (date) params.push(`date=${encodeURIComponent(date)}`);
+    if (currentBoardSlug) params.push(`board=${encodeURIComponent(currentBoardSlug)}`);
     
     if (params.length > 0) {
         url += '?' + params.join('&');
@@ -287,7 +629,7 @@ function createNewsCard(newsItem, index) {
     likeButton.title = '感兴趣';
     likeButton.disabled = !safeLink;
     likeButton.innerHTML = ICONS.like;
-    likeButton.addEventListener('click', () => sendFeedback(likeButton, newsItem.original_link, 1));
+    likeButton.addEventListener('click', () => sendFeedback(likeButton, newsItem.original_link, 1, newsItem));
 
     const dislikeButton = document.createElement('button');
     dislikeButton.type = 'button';
@@ -424,15 +766,36 @@ function confirmForceRefresh() {
 
 function togglePersonaPanel() {
     const panel = document.getElementById('persona-panel');
-    panel.classList.toggle('active');
-    if (panel.classList.contains('active')) {
-        loadPersonaData();
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) {
+        loadPersonaInstructions();
+        fetchSystemMetrics();
+        loadExplicitPreferences();
+    }
+}
+
+async function fetchSystemMetrics() {
+    try {
+        const response = await fetch('/api/v1/metrics');
+        const data = await response.json();
+        
+        if (data.tokens) {
+            document.getElementById('metric-tokens').textContent = data.tokens.total.toLocaleString();
+        }
+        if (data.latency) {
+            document.getElementById('metric-p50').textContent = data.latency.p50_sec > 0 ? `${data.latency.p50_sec} s` : '--';
+            document.getElementById('metric-p99').textContent = data.latency.p99_sec > 0 ? `${data.latency.p99_sec} s` : '--';
+        }
+    } catch (e) {
+        console.error("Failed to load metrics", e);
     }
 }
 
 async function loadPersonaData() {
     try {
-        const response = await fetch('/api/v1/persona');
+        let url = '/api/v1/persona';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        const response = await fetch(url);
         if (response.ok) {
             renderPersonaInstructions(await response.json());
         }
@@ -512,7 +875,7 @@ async function removePersona(id) {
     }
 }
 
-async function sendFeedback(buttonElement, url, sentiment) {
+async function sendFeedback(buttonElement, url, sentiment, newsItem) {
     const container = buttonElement.closest('.feedback-container');
     const likeButton = container ? container.querySelector('.feedback-btn.like') : null;
     const dislikeButton = container ? container.querySelector('.feedback-btn.dislike') : null;
@@ -544,6 +907,12 @@ async function sendFeedback(buttonElement, url, sentiment) {
         }
 
         updateFeedbackStateInData(url, nextSentiment);
+
+        // On a fresh positive like, offer the user a chance to declare WHY
+        // (capturing abstract intent rather than literal subject).
+        if (nextSentiment === 1 && currentSentiment !== 1 && newsItem) {
+            showInterestReasonPopup(buttonElement, newsItem);
+        }
     } catch (error) {
         console.error('Failed to submit feedback:', error);
         applyFeedbackState(likeButton, dislikeButton, currentSentiment);
@@ -552,6 +921,91 @@ async function sendFeedback(buttonElement, url, sentiment) {
         likeButton.disabled = disabled;
         dislikeButton.disabled = disabled;
     }
+}
+
+async function showInterestReasonPopup(anchorButton, newsItem) {
+    // Remove any existing popup
+    document.querySelectorAll('.interest-popup').forEach((el) => el.remove());
+
+    const card = anchorButton.closest('.news-card');
+    if (!card) return;
+
+    const popup = document.createElement('div');
+    popup.className = 'interest-popup';
+    popup.innerHTML = `
+        <div class="interest-popup__header">
+            <span class="interest-popup__title">🎯 你为什么感兴趣？</span>
+            <button type="button" class="interest-popup__close" aria-label="关闭">×</button>
+        </div>
+        <p class="interest-popup__hint">选一项，添加为长期偏好。会影响后续生成的简报。</p>
+        <div class="interest-popup__options">
+            <div class="interest-popup__loading">AI 正在为你提炼选项...</div>
+        </div>
+    `;
+    card.appendChild(popup);
+
+    const closeBtn = popup.querySelector('.interest-popup__close');
+    closeBtn.addEventListener('click', () => popup.remove());
+
+    // Auto-dismiss after 25s if untouched
+    const dismissTimer = setTimeout(() => popup.remove(), 25000);
+
+    let options = [];
+    try {
+        const res = await fetch('/api/v1/feedback/interest-options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                headline: newsItem.headline || '',
+                key_points: newsItem.key_points || [],
+                tags: newsItem.tags || [],
+            }),
+        });
+        if (res.ok) {
+            const data = await res.json();
+            options = Array.isArray(data.options) ? data.options : [];
+        }
+    } catch (error) {
+        console.error('Failed to fetch interest options:', error);
+    }
+
+    const optionsContainer = popup.querySelector('.interest-popup__options');
+    optionsContainer.innerHTML = '';
+    if (options.length === 0) {
+        optionsContainer.innerHTML = '<div class="interest-popup__empty">未能生成选项，可稍后在偏好面板手动添加。</div>';
+        return;
+    }
+
+    options.forEach((opt) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'interest-chip';
+        chip.textContent = opt;
+        chip.addEventListener('click', async () => {
+            chip.disabled = true;
+            chip.classList.add('saving');
+            try {
+                let url = '/api/v1/feedback/save-reason';
+                if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+                const r = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: opt }),
+                });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                clearTimeout(dismissTimer);
+                popup.classList.add('saved');
+                popup.querySelector('.interest-popup__options').innerHTML =
+                    `<div class="interest-popup__success">✅ 已添加：<strong>${opt}</strong></div>`;
+                setTimeout(() => popup.remove(), 1500);
+            } catch (error) {
+                console.error('Failed to save interest reason:', error);
+                chip.disabled = false;
+                chip.classList.remove('saving');
+            }
+        });
+        optionsContainer.appendChild(chip);
+    });
 }
 
 function setupHistoryPanel() {
@@ -659,7 +1113,9 @@ async function triggerWeeklyInsight() {
     }, 2500);
 
     try {
-        const response = await fetch('/api/v1/history/weekly_insight');
+        let url = '/api/v1/history/weekly_insight';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        const response = await fetch(url);
         clearInterval(interval);
         
         if (!response.ok) throw new Error('Generation failed');
@@ -718,7 +1174,9 @@ async function loadHistoryData(target = 'history') {
     }
 
     try {
-        const response = await fetch('/api/v1/history');
+        let url = '/api/v1/history';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        const response = await fetch(url);
         if (!response.ok) throw new Error('Failed to fetch history');
 
         const historyData = await response.json();
@@ -969,47 +1427,66 @@ async function openRagPanel(url, headline) {
         }
     })();
 
-    const ingestMessage = appendMessage('system', '正在阅读原文并建立知识索引，请稍候...');
-
+    // --- Background-aware ingestion: check status first, skip loading if already done ---
+    let alreadyIngested = false;
     try {
-        const response = await fetch('/api/v1/rag/ingest', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: panelUrl })
-        });
-
-        if (!response.ok) {
-            throw new Error('文章索引失败，请检查该链接是否可访问。');
-        }
-
-        const data = await response.json();
-        if (currentUrl !== panelUrl) {
-            return;
-        }
-        ingestMessage.textContent = `原文已加载（共 ${data.chunks} 个段落块）。现在你可以继续追问了。`;
-
-        // Show quality warning if extraction was problematic
-        if (data.quality && data.quality.verdict !== 'good') {
-            const qualityMsg = appendMessage('system', '');
-            const detail = data.quality.details ? `（${data.quality.details}）` : '';
-            if (data.quality.verdict === 'partial') {
-                qualityMsg.className = 'rag-msg rag-msg--system quality-warning';
-                qualityMsg.textContent = `⚠️ 内容解析不完整，回答可能有遗漏${detail}`;
-            } else {
-                qualityMsg.className = 'rag-msg rag-msg--system quality-error';
-                qualityMsg.textContent = `❌ 内容提取质量很差，建议直接阅读原文${detail}`;
+        const statusRes = await fetch(`/api/v1/rag/ingest_status?url=${encodeURIComponent(panelUrl)}`);
+        if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            if (statusData.status === 'done') {
+                alreadyIngested = true;
             }
         }
+    } catch (_) { /* ignore – will fall through to ingest */ }
 
+    if (alreadyIngested) {
+        const ingestMessage = appendMessage('system', '知识索引已就绪，你可以直接提问。');
         input.disabled = false;
         input.focus();
-    } catch (error) {
-        if (currentUrl === panelUrl) {
-            ingestMessage.textContent = error.message;
-        }
-    } finally {
-        if (!currentUrl || currentUrl === panelUrl) {
-            isIngesting = false;
+        isIngesting = false;
+    } else {
+        const ingestMessage = appendMessage('system', '正在阅读原文并建立知识索引，请稍候...');
+
+        try {
+            const response = await fetch('/api/v1/rag/ingest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: panelUrl })
+            });
+
+            if (!response.ok) {
+                throw new Error('文章索引失败，请检查该链接是否可访问。');
+            }
+
+            const data = await response.json();
+            if (currentUrl !== panelUrl) {
+                return;
+            }
+            ingestMessage.textContent = `原文已加载（共 ${data.chunks} 个段落块）。现在你可以继续追问了。`;
+
+            // Show quality warning if extraction was problematic
+            if (data.quality && data.quality.verdict !== 'good') {
+                const qualityMsg = appendMessage('system', '');
+                const detail = data.quality.details ? `（${data.quality.details}）` : '';
+                if (data.quality.verdict === 'partial') {
+                    qualityMsg.className = 'rag-msg rag-msg--system quality-warning';
+                    qualityMsg.textContent = `⚠️ 内容解析不完整，回答可能有遗漏${detail}`;
+                } else {
+                    qualityMsg.className = 'rag-msg rag-msg--system quality-error';
+                    qualityMsg.textContent = `❌ 内容提取质量很差，建议直接阅读原文${detail}`;
+                }
+            }
+
+            input.disabled = false;
+            input.focus();
+        } catch (error) {
+            if (currentUrl === panelUrl) {
+                ingestMessage.textContent = error.message;
+            }
+        } finally {
+            if (!currentUrl || currentUrl === panelUrl) {
+                isIngesting = false;
+            }
         }
     }
 
@@ -1040,6 +1517,8 @@ async function runRagQuery(question) {
         currentQueryController.abort();
     }
     currentQueryController = new AbortController();
+
+    let citations = [];
 
     try {
         const response = await fetch('/api/v1/rag/query', {
@@ -1079,6 +1558,9 @@ async function runRagQuery(question) {
                         if (metadata.type === 'scoring_explain') {
                             renderScoringExplain(aiMessage, metadata.scores || []);
                         }
+                        if (metadata.citations) {
+                            citations = metadata.citations;
+                        }
                     } catch (error) {
                         console.error('Failed to parse metadata:', error);
                     }
@@ -1088,6 +1570,10 @@ async function runRagQuery(question) {
                 markdownContent += token;
                 renderAiMarkdown(aiMessage, markdownContent);
             }
+        }
+
+        if (citations.length > 0) {
+            renderCitations(aiMessage, citations);
         }
     } catch (error) {
         if (error.name !== 'AbortError') {
@@ -1144,6 +1630,46 @@ function ensureAiContent(message) {
         message.appendChild(content);
     }
     return content;
+}
+
+function renderCitations(message, citations) {
+    const existing = message.querySelector('.citation-sources');
+    if (existing) existing.remove();
+    if (!citations || citations.length === 0) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'citation-sources';
+
+    const heading = document.createElement('div');
+    heading.className = 'citation-heading';
+    heading.textContent = '📚 参考来源';
+    wrapper.appendChild(heading);
+
+    citations.forEach((cite) => {
+        const card = document.createElement('div');
+        card.className = 'citation-card';
+
+        const badge = document.createElement('span');
+        badge.className = 'citation-index';
+        badge.textContent = `[${cite.index}]`;
+
+        const text = document.createElement('span');
+        text.className = 'citation-preview';
+        text.textContent = cite.preview || '无预览';
+
+        const src = document.createElement('span');
+        src.className = `score-tag ${sourceLabel(cite.source || 'semantic').cls}`;
+        src.textContent = sourceLabel(cite.source || 'semantic').text;
+
+        card.appendChild(badge);
+        card.appendChild(text);
+        card.appendChild(src);
+        wrapper.appendChild(card);
+    });
+
+    const content = ensureAiContent(message);
+    content.appendChild(wrapper);
+    scrollRagMessagesToBottom();
 }
 
 function renderScoringExplain(message, scores) {
@@ -1295,4 +1821,150 @@ function appendStaticIcon(element, svgMarkup) {
 function scrollRagMessagesToBottom() {
     const messages = document.getElementById('rag-messages');
     messages.scrollTop = messages.scrollHeight;
+}
+
+// ---------------------------------------------------------------
+// Insights Panel
+// ---------------------------------------------------------------
+
+function toggleInsightsPanel() {
+    const modal = document.getElementById('insights-modal');
+    const isOpen = modal.style.display === 'flex';
+    modal.style.display = isOpen ? 'none' : 'flex';
+    if (!isOpen) fetchHeatmap();
+}
+
+async function fetchHeatmap() {
+    const days = document.getElementById('heatmap-days').value;
+    const container = document.getElementById('heatmap-container');
+    container.innerHTML = '<p class="heatmap-placeholder">加载中...</p>';
+    try {
+        let url = `/api/v1/insights/heatmap?days=${days}`;
+        if (currentBoardSlug) url += `&board=${encodeURIComponent(currentBoardSlug)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        renderHeatmap(data, container);
+    } catch (e) {
+        container.innerHTML = '<p class="heatmap-placeholder">加载失败</p>';
+    }
+}
+
+function renderHeatmap(data, container) {
+    if (!data.topics || data.topics.length === 0) {
+        container.innerHTML = '<p class="heatmap-placeholder">暂无足够历史数据</p>';
+        return;
+    }
+    const dates = data.dates || [];
+    const maxCount = Math.max(...data.topics.flatMap(t => t.counts), 1);
+
+    // Build header row
+    let html = `<div class="heatmap-grid" style="--cols:${dates.length}">`;
+    html += '<div class="heatmap-label"></div>';
+    for (const d of dates) {
+        const short = d.slice(5); // "04-21"
+        html += `<div class="heatmap-date">${short}</div>`;
+    }
+
+    for (const topic of data.topics) {
+        html += `<div class="heatmap-label" title="${topic.name} (${topic.total})">${topic.name}</div>`;
+        for (const c of topic.counts) {
+            const opacity = c === 0 ? 0 : Math.max(0.15, c / maxCount);
+            html += `<div class="heatmap-cell" style="opacity:${opacity}" title="${c}"></div>`;
+        }
+    }
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+async function fetchEntityTimeline() {
+    const entity = document.getElementById('entity-input').value.trim();
+    if (!entity) return;
+    const container = document.getElementById('timeline-container');
+    container.innerHTML = '<p class="timeline-placeholder">搜索中...</p>';
+    try {
+        let url = `/api/v1/insights/timeline?entity=${encodeURIComponent(entity)}&days=30`;
+        if (currentBoardSlug) url += `&board=${encodeURIComponent(currentBoardSlug)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        renderTimeline(data, container);
+    } catch (e) {
+        container.innerHTML = '<p class="timeline-placeholder">搜索失败</p>';
+    }
+}
+
+function renderTimeline(data, container) {
+    if (!data.items || data.items.length === 0) {
+        container.innerHTML = `<p class="timeline-placeholder">近 ${data.days} 天内未找到与"${data.entity}"相关的报道</p>`;
+        return;
+    }
+    let html = `<p class="timeline-summary">近 ${data.days} 天共 <strong>${data.total}</strong> 条与"${data.entity}"相关的报道</p>`;
+    html += '<div class="timeline-list">';
+    for (const item of data.items) {
+        html += `<div class="timeline-item">
+            <span class="timeline-date">${item.date}</span>
+            <span class="timeline-cat">${item.category}</span>
+            <a href="${item.link}" target="_blank" class="timeline-headline">${item.headline}</a>
+            <span class="timeline-source">${item.source}</span>
+        </div>`;
+    }
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+// ---------------------------------------------------------------
+// Explicit Preference Tags
+// ---------------------------------------------------------------
+
+async function loadExplicitPreferences() {
+    try {
+        let url = '/api/v1/preferences';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        for (const cat of ['focus_topic', 'block_topic', 'prefer_source', 'avoid_source']) {
+            renderPrefTags(cat, data[cat] || []);
+        }
+    } catch (e) {
+        console.error('Failed to load preferences', e);
+    }
+}
+
+function renderPrefTags(category, items) {
+    const container = document.getElementById(`pref-tags-${category}`);
+    if (!container) return;
+    if (items.length === 0) {
+        container.innerHTML = '<span class="pref-empty">暂无</span>';
+        return;
+    }
+    container.innerHTML = items.map(item =>
+        `<span class="pref-tag pref-tag-${category}">${item.content}<button class="pref-del" onclick="deletePrefTag(${item.id})">&times;</button></span>`
+    ).join('');
+}
+
+async function addPrefTag(category) {
+    const input = document.getElementById(`pref-input-${category}`);
+    const content = input.value.trim();
+    if (!content) return;
+    try {
+        let url = '/api/v1/persona';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({content, category}),
+        });
+        input.value = '';
+        loadExplicitPreferences();
+    } catch (e) {
+        console.error('Failed to add preference', e);
+    }
+}
+
+async function deletePrefTag(id) {
+    try {
+        await fetch(`/api/v1/persona/${id}`, {method: 'DELETE'});
+        loadExplicitPreferences();
+    } catch (e) {
+        console.error('Failed to delete preference', e);
+    }
 }

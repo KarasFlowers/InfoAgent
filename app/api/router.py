@@ -3,7 +3,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,11 +14,140 @@ from app.models.schemas import DailySummaryResponse, RSSResponse, SummaryHistory
 from app.services.db_service import db_service
 from app.services.learning_service import get_inferred_interests, rerank_summary_items
 from app.services.llm_service import llm_service
+from app.services.metrics_service import metrics_service
 from app.services.rss_service import fetch_all_feeds
+from app.services.email_service import email_service
+
+logger = logging.getLogger(__name__)
+
+class PersonaCreateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    category: str = Field(default="instruction", max_length=64)
+    board_id: Optional[int] = None  # null = global persona
+
+
+class BoardCreateRequest(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_\-]+$")
+    name: str = Field(min_length=1, max_length=128)
+    icon: str = Field(default="", max_length=32)
+    description: str = Field(default="", max_length=500)
+    system_prompt: str = Field(default="", max_length=4000)
+    source_type: str = Field(default="rss", max_length=32)
+    source_config: dict = Field(default_factory=dict)
+    display_order: int = Field(default=0)
+
+
+class BoardUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=128)
+    icon: Optional[str] = Field(default=None, max_length=32)
+    description: Optional[str] = Field(default=None, max_length=500)
+    system_prompt: Optional[str] = Field(default=None, max_length=4000)
+    source_type: Optional[str] = Field(default=None, max_length=32)
+    source_config: Optional[dict] = None
+    display_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class BoardWizardMessage(BaseModel):
+    role: str = Field(pattern=r"^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class BoardWizardRequest(BaseModel):
+    messages: list[BoardWizardMessage] = Field(min_length=1, max_length=20)
+
+
+_summary_generation_lock = asyncio.Lock()
 
 api_router = APIRouter()
-logger = logging.getLogger(__name__)
-_summary_generation_lock = asyncio.Lock()
+
+@api_router.get("/feed")
+async def get_rss_feed(session: AsyncSession = Depends(get_session)):
+    """
+    Export the last 7 daily summaries as a standard RSS 2.0 XML feed.
+    """
+    history = await db_service.get_summary_history(session, limit=7)
+    
+    # We'll use the domain of the first incoming request or just a generic placeholder 
+    # since we don't have a configured base URL for the app itself in settings.
+    site_url = "https://infoagent.local"
+    
+    xml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<rss version="2.0">',
+        '  <channel>',
+        '    <title>InfoAgent Daily Briefing</title>',
+        f'    <link>{site_url}</link>',
+        '    <description>Your personalized daily technology and AI briefing.</description>',
+        '    <language>zh-cn</language>'
+    ]
+    
+    from datetime import timezone
+    for history_item in history:
+        summary = await db_service.get_summary_by_date(session, history_item.date)
+        if not summary:
+            continue
+            
+        # Convert date string to proper RFC-822 date format for RSS
+        try:
+            dt = datetime.strptime(summary.date, "%Y-%m-%d")
+            dt = dt.replace(tzinfo=timezone.utc)
+            pub_date = dt.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        except ValueError:
+            pub_date = ""
+
+        # Build the HTML content for the RSS description
+        html_content = email_service._render_html(summary)
+        
+        # Escape XML entities
+        escaped_html = html_content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+        
+        xml.append('    <item>')
+        xml.append(f'      <title>InfoAgent 日报 - {summary.date}</title>')
+        xml.append(f'      <link>{site_url}/?date={summary.date}</link>')
+        xml.append(f'      <guid isPermaLink="false">infoagent-{summary.date}</guid>')
+        if pub_date:
+            xml.append(f'      <pubDate>{pub_date}</pubDate>')
+        xml.append(f'      <description>{escaped_html}</description>')
+        xml.append('    </item>')
+        
+    xml.append('  </channel>')
+    xml.append('</rss>')
+    
+    return Response(content="\n".join(xml), media_type="application/rss+xml")
+
+
+@api_router.get("/metrics")
+async def get_system_metrics(date: str | None = None):
+    """
+    Get system metrics (token usage and latency) for a specific date (defaults to today).
+    """
+    return await metrics_service.get_daily_metrics(date)
+
+
+@api_router.get("/insights/heatmap")
+async def get_insights_heatmap(
+    session: AsyncSession = Depends(get_session),
+    days: int = Query(default=7, ge=1, le=30),
+):
+    """
+    Get a topic heatmap (category + tag counts per day) for the last N days.
+    """
+    from app.services.insights_service import get_topic_heatmap
+    return await get_topic_heatmap(session, days)
+
+
+@api_router.get("/insights/timeline")
+async def get_insights_timeline(
+    session: AsyncSession = Depends(get_session),
+    entity: str = Query(..., min_length=1),
+    days: int = Query(default=30, ge=1, le=90),
+):
+    """
+    Get a timeline of news items mentioning a specific entity keyword.
+    """
+    from app.services.insights_service import get_entity_timeline
+    return await get_entity_timeline(session, entity, days)
 
 
 @api_router.get("/ping")
@@ -36,26 +166,43 @@ async def manually_trigger_rss_fetch():
     return await fetch_all_feeds(settings.RSS_FEEDS)
 
 
+async def _resolve_board(session: AsyncSession, slug: str | None):
+    """
+    Resolve an optional board slug to a Board row. When slug is None,
+    returns the default board. Raises 404 if slug is provided but not found.
+    """
+    if slug:
+        board = await db_service.get_board_by_slug(session, slug)
+        if not board or not board.is_active:
+            raise HTTPException(status_code=404, detail=f"Board '{slug}' not found or inactive.")
+        return board
+    return await db_service.get_default_board(session)
+
+
 @api_router.get("/summary", response_model=DailySummaryResponse)
 async def generate_summary(
     force: bool = False,
     date: Optional[str] = None,
     preference: Optional[str] = None,
     save_preference: bool = False,
+    board: Optional[str] = None,
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Returns AI summary for today or a specific date.
+    Returns AI summary for today or a specific date, scoped to a board.
+    If board is not provided, falls back to the default board (tech).
     If date is provided, only fetch from DB (no external generation for history).
     """
     search_date = date if date else datetime.now().strftime("%Y-%m-%d")
+    board_obj = await _resolve_board(session, board)
+    board_id = board_obj.id if board_obj else None
 
     # 1. Check database first (FAST PATH)
     if not force:
-        existing_summary = await db_service.get_summary_by_date(session, search_date)
+        existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
         if existing_summary:
             try:
-                existing_summary.top_news = await rerank_summary_items(existing_summary.top_news)
+                existing_summary.top_news = await rerank_summary_items(existing_summary.top_news, session=session)
             except Exception:
                 logger.debug("Persona reranking skipped (no feedback data or model not loaded)")
             return existing_summary
@@ -66,17 +213,26 @@ async def generate_summary(
 
     async with _summary_generation_lock:
         if not force:
-            existing_summary = await db_service.get_summary_by_date(session, search_date)
+            existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
             if existing_summary:
                 try:
-                    existing_summary.top_news = await rerank_summary_items(existing_summary.top_news)
+                    existing_summary.top_news = await rerank_summary_items(existing_summary.top_news, session=session)
                 except Exception:
                     pass
                 return existing_summary
 
-        results = await fetch_all_feeds(settings.RSS_FEEDS)
-        summary = await llm_service.generate_daily_summary(
-            results,
+        # Dispatch to the correct source adapter based on the board's source_type.
+        from app.services.source_adapters import get_adapter, UnknownSourceTypeError
+        if board_obj is None:
+            raise HTTPException(status_code=500, detail="No board configured — cannot generate summary.")
+        try:
+            adapter = get_adapter(board_obj.source_type)
+        except UnknownSourceTypeError as error:
+            logger.error("Board '%s' has unsupported source_type: %s", board_obj.slug, error)
+            raise HTTPException(status_code=500, detail=str(error))
+
+        summary = await adapter.produce(
+            board=board_obj,
             session=session,
             one_time_preference=preference,
         )
@@ -86,13 +242,13 @@ async def generate_summary(
 
         try:
             if force:
-                await db_service.replace_summary(session, summary)
+                await db_service.replace_summary(session, summary, board_id=board_id)
             else:
-                await db_service.save_summary(session, summary)
+                await db_service.save_summary(session, summary, board_id=board_id)
         except IntegrityError:
             logger.warning("Summary for %s already exists, returning stored version.", search_date)
             await session.rollback()
-            existing_summary = await db_service.get_summary_by_date(session, search_date)
+            existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
             if existing_summary:
                 return existing_summary
             raise HTTPException(status_code=500, detail="Failed to save AI summary.")
@@ -103,44 +259,67 @@ async def generate_summary(
 
         if preference and save_preference:
             try:
-                await db_service.save_persona(session, content=preference, category="instruction")
+                await db_service.save_persona(
+                    session, content=preference, category="instruction", board_id=board_id
+                )
             except Exception:
                 logger.exception("Failed to save persona preference")
                 raise HTTPException(status_code=500, detail="Summary was generated but the preference could not be saved.")
 
-        # 成功生成新简报后，尝试触发一次清理任务 (静默执行)
-        try:
-            await db_service.cleanup_old_data(session, days_to_keep=settings.HISTORY_DAYS_TO_KEEP)
-        except Exception:
-            logger.warning("Auto-cleanup task failed, skipping...")
+        # NOTE: cleanup_old_data is now handled by APScheduler (see scheduler.py).
+        # This eliminates the risk of a failed cleanup tainting the request session.
 
-        stored_summary = await db_service.get_summary_by_date(session, search_date)
+        # Enqueue articles for background RAG ingestion
+        if settings.RAG_BACKGROUND_INGEST_ENABLED:
+            from app.services.rag_service import enqueue_for_ingest
+            article_urls = [item.original_link for item in summary.top_news if item.original_link]
+            enqueue_for_ingest(article_urls)
+
+        stored_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
         final = stored_summary or summary
         try:
-            final.top_news = await rerank_summary_items(final.top_news)
+            final.top_news = await rerank_summary_items(final.top_news, session=session)
         except Exception:
             logger.debug("Persona reranking skipped for fresh summary")
         return final
 
 
 @api_router.get("/persona")
-async def get_persona(session: AsyncSession = Depends(get_session)):
+async def get_persona(
+    board: Optional[str] = None,
+    include_global: bool = True,
+    session: AsyncSession = Depends(get_session),
+):
     """
-    Get all active persona instructions.
+    Get active persona instructions. When board is provided, returns that
+    board's personas (plus global ones if include_global=True).
     """
-    return await db_service.get_active_personas(session)
+    board_id: int | None = None
+    if board is not None:
+        board_obj = await _resolve_board(session, board)
+        board_id = board_obj.id if board_obj else None
+    return await db_service.get_active_personas(
+        session, board_id=board_id, include_global=include_global
+    )
 
 
 @api_router.post("/persona")
 async def add_persona(
-    content: str,
-    category: str = "instruction",
+    payload: PersonaCreateRequest,
+    board: Optional[str] = None,
     session: AsyncSession = Depends(get_session),
 ):
     """
     Add a new persona instruction.
+    Priority: payload.board_id > ?board=slug > global (null).
     """
-    await db_service.save_persona(session, content, category)
+    target_board_id: int | None = payload.board_id
+    if target_board_id is None and board:
+        board_obj = await _resolve_board(session, board)
+        target_board_id = board_obj.id if board_obj else None
+    await db_service.save_persona(
+        session, payload.content, payload.category, board_id=target_board_id
+    )
     return {"status": "ok"}
 
 
@@ -153,6 +332,51 @@ async def delete_persona(persona_id: int, session: AsyncSession = Depends(get_se
     return {"status": "ok"}
 
 
+class InterestOptionsRequest(BaseModel):
+    headline: str = Field(min_length=1, max_length=500)
+    key_points: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+
+
+@api_router.post("/feedback/interest-options")
+async def feedback_interest_options(payload: InterestOptionsRequest):
+    """
+    Given a just-liked article, return 3-4 LLM-suggested abstract interest
+    descriptions (e.g. "新 AI 模型发布动态") for the user to choose from,
+    so we can capture *real* intent rather than the literal article topic.
+    """
+    options = await llm_service.extract_interest_options(
+        headline=payload.headline,
+        key_points=payload.key_points,
+        tags=payload.tags,
+    )
+    return {"options": options}
+
+
+class SaveInterestReasonRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=200)
+
+
+@api_router.post("/feedback/save-reason")
+async def feedback_save_reason(
+    payload: SaveInterestReasonRequest,
+    board: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Persist the user's chosen abstract interest reason as an `extracted`
+    persona, scoped to the current board when provided.
+    """
+    board_id: int | None = None
+    if board:
+        board_obj = await _resolve_board(session, board)
+        board_id = board_obj.id if board_obj else None
+    await db_service.save_persona(
+        session, content=payload.content, category="extracted", board_id=board_id
+    )
+    return {"status": "ok"}
+
+
 @api_router.get("/persona/inferred")
 async def get_inferred_persona(session: AsyncSession = Depends(get_session)):
     """
@@ -161,24 +385,187 @@ async def get_inferred_persona(session: AsyncSession = Depends(get_session)):
     return await get_inferred_interests(session)
 
 
+@api_router.get("/preferences")
+async def get_explicit_preferences(
+    board: Optional[str] = None,
+    include_global: bool = True,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Get all explicit preference tags grouped by category, optionally scoped to a board.
+    """
+    board_id: int | None = None
+    if board is not None:
+        board_obj = await _resolve_board(session, board)
+        board_id = board_obj.id if board_obj else None
+
+    categories = ["focus_topic", "block_topic", "prefer_source", "avoid_source"]
+    from sqlalchemy.future import select as sa_select
+    from app.models.domain import UserPersona
+    stmt = sa_select(UserPersona).where(
+        UserPersona.is_active == True,
+        UserPersona.category.in_(categories),
+    )
+    if board_id is not None:
+        if include_global:
+            stmt = stmt.where(
+                (UserPersona.board_id == board_id) | (UserPersona.board_id.is_(None))
+            )
+        else:
+            stmt = stmt.where(UserPersona.board_id == board_id)
+    result = await session.execute(stmt)
+    personas = result.scalars().all()
+    grouped: dict = {cat: [] for cat in categories}
+    for p in personas:
+        grouped[p.category].append(
+            {"id": p.id, "content": p.content, "board_id": p.board_id}
+        )
+    return grouped
+
+
+# ------------------------------------------------------------------
+# Board (custom section) CRUD
+# ------------------------------------------------------------------
+
+def _serialize_board(board) -> dict:
+    import json as _json
+    try:
+        config = _json.loads(board.source_config or "{}")
+    except (_json.JSONDecodeError, TypeError):
+        config = {}
+    return {
+        "id": board.id,
+        "slug": board.slug,
+        "name": board.name,
+        "icon": board.icon,
+        "description": board.description,
+        "system_prompt": board.system_prompt,
+        "source_type": board.source_type,
+        "source_config": config,
+        "display_order": board.display_order,
+        "is_active": board.is_active,
+        "is_default": board.is_default,
+    }
+
+
+@api_router.get("/boards")
+async def list_boards(
+    include_inactive: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """List all boards, ordered by display_order."""
+    boards = await db_service.list_boards(session, active_only=not include_inactive)
+    return [_serialize_board(b) for b in boards]
+
+
+@api_router.post("/boards")
+async def create_board(
+    payload: BoardCreateRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Create a new custom board."""
+    import json as _json
+    existing = await db_service.get_board_by_slug(session, payload.slug)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Board '{payload.slug}' already exists.")
+    if payload.source_type not in ("rss", "pure_llm"):
+        raise HTTPException(status_code=400, detail="source_type must be 'rss' or 'pure_llm'.")
+    board = await db_service.create_board(
+        session,
+        slug=payload.slug,
+        name=payload.name,
+        icon=payload.icon,
+        description=payload.description,
+        system_prompt=payload.system_prompt,
+        source_type=payload.source_type,
+        source_config=_json.dumps(payload.source_config, ensure_ascii=False),
+        display_order=payload.display_order,
+    )
+    return _serialize_board(board)
+
+
+@api_router.post("/boards/wizard")
+async def board_wizard(payload: BoardWizardRequest):
+    """
+    Interactive AI-guided wizard to help users configure a new board.
+    Accepts a conversation history, returns a reply plus (when ready) a suggested config.
+    """
+    result = await llm_service.wizard_suggest_board(
+        [m.model_dump() for m in payload.messages]
+    )
+    return result
+
+
+@api_router.get("/boards/{slug}")
+async def get_board(slug: str, session: AsyncSession = Depends(get_session)):
+    """Get a single board by slug."""
+    board = await db_service.get_board_by_slug(session, slug)
+    if not board:
+        raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")
+    return _serialize_board(board)
+
+
+@api_router.patch("/boards/{slug}")
+async def update_board(
+    slug: str,
+    payload: BoardUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Update a board's metadata/config."""
+    import json as _json
+    updates = payload.model_dump(exclude_unset=True)
+    if "source_config" in updates and updates["source_config"] is not None:
+        updates["source_config"] = _json.dumps(updates["source_config"], ensure_ascii=False)
+    if "source_type" in updates and updates["source_type"] not in ("rss", "pure_llm"):
+        raise HTTPException(status_code=400, detail="source_type must be 'rss' or 'pure_llm'.")
+    board = await db_service.update_board(session, slug, updates)
+    if not board:
+        raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")
+    return _serialize_board(board)
+
+
+@api_router.delete("/boards/{slug}")
+async def delete_board(slug: str, session: AsyncSession = Depends(get_session)):
+    """Soft-delete a board (mark inactive). The default board cannot be deleted."""
+    ok = await db_service.delete_board(session, slug)
+    if not ok:
+        board = await db_service.get_board_by_slug(session, slug)
+        if board and board.is_default:
+            raise HTTPException(status_code=400, detail="The default board cannot be deleted.")
+        raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")
+    return {"status": "ok"}
+
+
 @api_router.get("/history", response_model=SummaryHistoryResponse)
-async def get_summary_history(limit: int = 7, session: AsyncSession = Depends(get_session)):
+async def get_summary_history(
+    limit: int = 7,
+    board: Optional[str] = None,
+    session: AsyncSession = Depends(get_session)
+):
     """
     Retrieve lightweight archive cards and weekly recap for recent summaries.
     """
     safe_limit = max(1, min(limit, 30))
-    return await db_service.get_summary_history(session, limit=safe_limit)
+    board_obj = await _resolve_board(session, board)
+    board_id = board_obj.id if board_obj else None
+    return await db_service.get_summary_history(session, limit=safe_limit, board_id=board_id)
 
 
 @api_router.get("/history/weekly_insight")
-async def get_weekly_insight(limit: int = 7, session: AsyncSession = Depends(get_session)):
+async def get_weekly_insight(
+    limit: int = 7,
+    board: Optional[str] = None,
+    session: AsyncSession = Depends(get_session)
+):
     """
     Generate a deep, Wired-style weekly consolidation from recent summaries.
     """
     safe_limit = max(1, min(limit, 10))
+    board_obj = await _resolve_board(session, board)
+    board_id = board_obj.id if board_obj else None
     
     # 1. Fetch recent summaries with enough detail
-    history = await db_service.get_summary_history(session, limit=safe_limit)
+    history = await db_service.get_summary_history(session, limit=safe_limit, board_id=board_id)
     if not history.archive_items:
         raise HTTPException(status_code=404, detail="No history found to summarize.")
 
@@ -186,9 +573,9 @@ async def get_weekly_insight(limit: int = 7, session: AsyncSession = Depends(get
     # For now, let's just get the recent dates and fetch full data for those
     summaries_data = []
     for item in history.archive_items:
-        full = await db_service.get_summary_by_date(session, item.date)
+        full = await db_service.get_summary_by_date(session, item.date, board_id=board_id)
         if full:
-            summaries_data.append(full.dict())
+            summaries_data.append(full.model_dump())
 
     if not summaries_data:
         raise HTTPException(status_code=404, detail="Failed to retrieve history content.")

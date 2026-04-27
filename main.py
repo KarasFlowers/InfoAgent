@@ -1,16 +1,23 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.router import api_router
 from app.api.rag_router import rag_router
 from app.core.config import settings
 from app.core.db import init_db
+from app.core.logging_config import setup_logging, new_trace_id
+
+# ---- Initialise structured logging BEFORE anything else logs ----
+setup_logging()
+logger = structlog.get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = PROJECT_ROOT / "app" / "web"
@@ -20,20 +27,40 @@ TEMPLATES_DIR = WEB_ROOT / "templates"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+    from app.services import rag_service
+    from app.core.scheduler import start_scheduler, shutdown_scheduler
+
     # This runs when the server starts up
     await init_db()
-    
-    # 自动清理历史缓存 (启动时执行)
-    from app.core.db import get_session
-    from app.services.db_service import db_service
-    try:
-        async for session in get_session():
-            await db_service.cleanup_old_data(session, days_to_keep=settings.HISTORY_DAYS_TO_KEEP)
-            break
-    except Exception as e:
-        print(f"Startup cleanup failed: {e}")
-        
+
+    # Start APScheduler (handles periodic cleanup + future jobs)
+    start_scheduler()
+
+    # Start background ingest workers
+    worker_tasks: list[asyncio.Task] = []
+    if settings.RAG_BACKGROUND_INGEST_ENABLED:
+        for i in range(settings.RAG_BACKGROUND_INGEST_WORKERS):
+            task = asyncio.create_task(rag_service.ingest_worker_loop(worker_id=i))
+            worker_tasks.append(task)
+
+    logger.info("application_started")
     yield
+
+    # Shutdown scheduler
+    shutdown_scheduler()
+
+    # Shutdown: send sentinel per worker, then wait
+    for _ in worker_tasks:
+        try:
+            rag_service._ingest_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+    for task in worker_tasks:
+        task.cancel()
+    if worker_tasks:
+        await asyncio.gather(*worker_tasks, return_exceptions=True)
+    logger.info("application_stopped")
 
 app = FastAPI(
     title="InfoAgent API",
@@ -41,6 +68,16 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan
 )
+
+# ---- TraceID Middleware ----
+class TraceIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        tid = new_trace_id()
+        response = await call_next(request)
+        response.headers["X-Trace-ID"] = tid
+        return response
+
+app.add_middleware(TraceIDMiddleware)
 
 # Set up CORS
 app.add_middleware(

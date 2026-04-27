@@ -32,8 +32,17 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                     往日
                 </button>
+                <button id="insights-btn" class="back-btn" onclick="toggleInsightsPanel()" title="查看跨天话题洞察">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                    洞察
+                </button>
             </div>
         </header>
+
+        <!-- Board Tabs -->
+        <nav id="board-tabs" class="board-tabs fade-in" style="display:none;">
+            <!-- Tabs injected by JS -->
+        </nav>
 
         <!-- Persona Panel (HUD) -->
         <aside id="persona-panel" class="persona-panel">
@@ -46,6 +55,44 @@
                 <div id="persona-instructions" class="persona-list"></div>
             </div>
             
+            <!-- Explicit Preference Tags -->
+            <div class="persona-section pref-section">
+                <hr class="section-divider">
+                <h4>显式偏好控制</h4>
+                <div class="pref-group" data-cat="focus_topic">
+                    <label class="pref-label pref-focus">关注话题</label>
+                    <div class="pref-tags" id="pref-tags-focus_topic"></div>
+                    <div class="pref-add-row">
+                        <input type="text" placeholder="添加话题…" id="pref-input-focus_topic" onkeydown="if(event.key==='Enter') addPrefTag('focus_topic')">
+                        <button onclick="addPrefTag('focus_topic')">+</button>
+                    </div>
+                </div>
+                <div class="pref-group" data-cat="block_topic">
+                    <label class="pref-label pref-block">屏蔽话题</label>
+                    <div class="pref-tags" id="pref-tags-block_topic"></div>
+                    <div class="pref-add-row">
+                        <input type="text" placeholder="添加话题…" id="pref-input-block_topic" onkeydown="if(event.key==='Enter') addPrefTag('block_topic')">
+                        <button onclick="addPrefTag('block_topic')">+</button>
+                    </div>
+                </div>
+                <div class="pref-group" data-cat="prefer_source">
+                    <label class="pref-label pref-prefer">优先来源</label>
+                    <div class="pref-tags" id="pref-tags-prefer_source"></div>
+                    <div class="pref-add-row">
+                        <input type="text" placeholder="添加来源…" id="pref-input-prefer_source" onkeydown="if(event.key==='Enter') addPrefTag('prefer_source')">
+                        <button onclick="addPrefTag('prefer_source')">+</button>
+                    </div>
+                </div>
+                <div class="pref-group" data-cat="avoid_source">
+                    <label class="pref-label pref-avoid">降权来源</label>
+                    <div class="pref-tags" id="pref-tags-avoid_source"></div>
+                    <div class="pref-add-row">
+                        <input type="text" placeholder="添加来源…" id="pref-input-avoid_source" onkeydown="if(event.key==='Enter') addPrefTag('avoid_source')">
+                        <button onclick="addPrefTag('avoid_source')">+</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- New: Recommendation Report Section -->
             <div class="persona-section report-section" id="rec-report-container" style="display:none;">
                 <hr class="section-divider">
@@ -64,6 +111,27 @@
                     <h5>已被过滤的样本</h5>
                     <ul id="excluded-samples" class="exclusion-list"></ul>
                 </div>
+            </div>
+
+            <!-- New: System Metrics Section -->
+            <div class="persona-section metrics-section" id="system-metrics-container">
+                <hr class="section-divider">
+                <h4>今日系统消耗</h4>
+                <div class="metrics-grid">
+                    <div class="metric-item">
+                        <span class="metric-label">消耗 Tokens</span>
+                        <span class="metric-value" id="metric-tokens">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-label">简报耗时 (P50)</span>
+                        <span class="metric-value" id="metric-p50">-- s</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-label">简报耗时 (P99)</span>
+                        <span class="metric-value" id="metric-p99">-- s</span>
+                    </div>
+                </div>
+                <button class="metrics-refresh-btn" onclick="fetchSystemMetrics()">↻ 刷新数据</button>
             </div>
         </aside>
 
@@ -100,6 +168,38 @@
                     </div>
                     <div id="weekly-insight-content" class="weekly-insight-content">
                         <p class="magazine-placeholder">点击上方按钮，AI 主编将为你复盘本周技术版图的深层变革。</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Insights Modal -->
+        <div id="insights-modal" class="modal-overlay" onclick="if(event.target === this) toggleInsightsPanel()">
+            <div class="modal-content insights-modal-content">
+                <div class="persona-header">
+                    <h3>跨天话题洞察</h3>
+                    <button class="close-btn" onclick="toggleInsightsPanel()">&times;</button>
+                </div>
+                <div class="insights-body">
+                    <div class="insights-controls">
+                        <label>近 <select id="heatmap-days" onchange="fetchHeatmap()">
+                            <option value="7" selected>7</option>
+                            <option value="14">14</option>
+                            <option value="30">30</option>
+                        </select> 天话题热度</label>
+                    </div>
+                    <div id="heatmap-container" class="heatmap-container">
+                        <p class="heatmap-placeholder">加载中...</p>
+                    </div>
+
+                    <hr class="section-divider">
+                    <h4>实体时间线</h4>
+                    <div class="entity-search-bar">
+                        <input id="entity-input" type="text" placeholder="搜索实体（如 OpenAI, GPT-5...）" onkeydown="if(event.key==='Enter') fetchEntityTimeline()">
+                        <button onclick="fetchEntityTimeline()">搜索</button>
+                    </div>
+                    <div id="timeline-container" class="timeline-container">
+                        <p class="timeline-placeholder">输入关键词后回车查看该实体的历史出现轨迹</p>
                     </div>
                 </div>
             </div>
@@ -165,17 +265,94 @@
         <div class="modal-content">
             <h3>重新调教简报</h3>
             <p>你可以增加额外的指令来引导 AI 生成今日简报：</p>
-            <textarea id="refresh-preference" placeholder="例如：多看 AI 大模型，少看硬件细节..."></textarea>
+            <textarea id="refresh-prompt" placeholder="例如：今天只看关于人工智能的新闻，或者帮我把每条新闻缩短一点..."></textarea>
             <div class="modal-options">
-                <label class="checkbox-container">
-                    <input type="checkbox" id="save-preference-chk">
-                    <span class="checkmark"></span>
-                    设为长期兴趣 (持久化)
+                <label>
+                    <input type="checkbox" id="refresh-save-persona">
+                    同时将其保存为长期偏好
                 </label>
             </div>
             <div class="modal-btns">
-                <button class="back-btn" onclick="closeRefreshModal()">取消</button>
-                <button class="primary-btn" onclick="confirmForceRefresh()">开始重新生成</button>
+                <button class="secondary-btn" onclick="closeRefreshModal()">取消</button>
+                <button class="primary-btn" onclick="submitRefresh()">重新生成</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Board Management Modal -->
+    <div id="board-modal" class="modal-overlay">
+        <div class="modal-content" style="max-width: 560px; width: 90%;">
+            <h3 id="board-modal-title">新建板块</h3>
+            
+            <!-- Tabs: AI Wizard / Manual -->
+            <div id="board-mode-tabs" class="board-mode-tabs">
+                <button type="button" class="board-mode-tab active" data-mode="wizard" onclick="switchBoardMode('wizard')">
+                    ✨ AI 向导
+                </button>
+                <button type="button" class="board-mode-tab" data-mode="manual" onclick="switchBoardMode('manual')">
+                    ✏️ 手动填写
+                </button>
+            </div>
+
+            <!-- AI Wizard Panel -->
+            <div id="board-wizard-panel" class="board-wizard-panel">
+                <div id="wizard-messages" class="wizard-messages">
+                    <div class="wizard-msg wizard-msg--ai">👋 告诉我你想要一个什么样的板块，比如：<br>"我想每天学 5 个英语商务单词"，<br>"汇总国内外顶级 AI 实验室的最新论文"，<br>"每天给我一条冷门心理学知识"...</div>
+                </div>
+                <form class="wizard-input-row" onsubmit="submitWizard(event)">
+                    <input id="wizard-input" type="text" placeholder="描述你的需求..." autocomplete="off">
+                    <button type="submit" id="wizard-submit-btn" class="primary-btn">发送</button>
+                </form>
+                <div id="wizard-apply-row" class="wizard-apply-row" style="display:none;">
+                    <span>✅ AI 已生成推荐配置</span>
+                    <button type="button" class="primary-btn" onclick="applyWizardConfig()">应用到表单</button>
+                </div>
+            </div>
+
+            <!-- Manual Form -->
+            <form id="board-form" onsubmit="saveBoard(event)" style="display:none;">
+                <input type="hidden" id="board-is-edit" value="false">
+                <input type="hidden" id="board-original-slug" value="">
+
+                <div class="form-group">
+                    <label>标识符 (Slug) <small>只允许英文字母、数字和横线，唯一标识</small></label>
+                    <input type="text" id="board-slug" required pattern="[a-zA-Z0-9\-]+" placeholder="e.g. english-learning">
+                </div>
+                <div class="form-group">
+                    <label>显示名称</label>
+                    <input type="text" id="board-name" required placeholder="e.g. 英语学习">
+                </div>
+                <div class="form-group">
+                    <label>图标 (Emoji)</label>
+                    <input type="text" id="board-icon" required placeholder="e.g. 🇬🇧" value="📌">
+                </div>
+                <div class="form-group">
+                    <label>数据源类型</label>
+                    <select id="board-source-type" onchange="toggleBoardSourceConfig()">
+                        <option value="rss">RSS 订阅源</option>
+                        <option value="pure_llm">纯 LLM 生成 (无外部数据)</option>
+                    </select>
+                </div>
+                <div class="form-group" id="board-rss-group">
+                    <label>RSS 源地址 (每行一个)</label>
+                    <textarea id="board-rss-urls" placeholder="https://example.com/rss.xml"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>系统提示词 (可选)</label>
+                    <textarea id="board-prompt" placeholder="给 AI 的系统级指令，例如：你是一个英语老师..."></textarea>
+                </div>
+
+                <div class="modal-btns" style="margin-top: 1rem;">
+                    <button type="button" class="secondary-btn" id="board-delete-btn" style="display:none; color:#ff4444; border-color:#ff4444;" onclick="deleteBoard()">删除此板块</button>
+                    <div style="flex:1;"></div>
+                    <button type="button" class="secondary-btn" onclick="closeBoardModal()">取消</button>
+                    <button type="submit" class="primary-btn">保存</button>
+                </div>
+            </form>
+
+            <!-- Footer when wizard is active -->
+            <div id="board-wizard-footer" class="modal-btns" style="margin-top: 1rem;">
+                <button type="button" class="secondary-btn" onclick="closeBoardModal()">取消</button>
             </div>
         </div>
     </div>

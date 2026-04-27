@@ -39,21 +39,13 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-3. Start Redis.
-   Windows helper: `scripts\windows\Start_Redis.bat`
-
-4. Start the app:
+3. Start the app:
 
 ```bash
 uvicorn main:app --reload
 ```
 
-5. Optional helpers:
-
-```bash
-python scripts/cli.py
-python scripts/run_daily_summary.py
-```
+> Windows one-click: double-click `scripts\Open_Web_Dashboard.bat`. It auto-starts Redis, launches the backend, waits for `/api/v1/ping` to become healthy, and opens the dashboard.
 
 ## Project Layout
 
@@ -68,11 +60,9 @@ python scripts/run_daily_summary.py
 ├─ data/
 │  ├─ chroma/       # Local vector store
 │  └─ sqlite/       # Local SQLite database
-├─ docs/            # Project notes and paper materials
+├─ docs/            # Project notes
 ├─ logs/            # Local runtime logs
-├─ scripts/
-│  ├─ dev/          # Debug and migration utilities
-│  └─ windows/      # Windows launchers
+├─ scripts/         # Windows launcher + Redis bootstrap
 ├─ tests/           # API tests
 └─ tools/           # Local bundled tools such as Redis
 ```
@@ -85,7 +75,7 @@ python scripts/run_daily_summary.py
 - Templates: `app/web/templates/`
 - SQLite DB: `data/sqlite/infoagent.db`
 - Chroma store: `data/chroma/`
-- Windows launchers: `scripts/windows/`
+- Windows launcher: `scripts/Open_Web_Dashboard.bat`
 
 ## License
 
