@@ -28,12 +28,13 @@ class PureLLMAdapter(SourceAdapter):
         board: "Board",
         session: AsyncSession,
         one_time_preference: str | None = None,
-    ) -> "DailySummaryResponse | None":
+    ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
         # Lazy-import to avoid circulars.
         from app.services.llm_service import llm_service
 
-        return await llm_service.generate_pure_llm_summary(
+        summary = await llm_service.generate_pure_llm_summary(
             board=board,
             session=session,
             one_time_preference=one_time_preference,
         )
+        return summary, {}

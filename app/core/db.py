@@ -149,6 +149,70 @@ async def _ensure_feedback_uniqueness(conn) -> None:
         )
 
 
+async def _migrate_json_columns(conn) -> None:
+    """
+    Convert string-based JSON columns (key_points, tags, stats_json) to
+    native JSON.  In SQLite the storage is TEXT either way, but SQLAlchemy
+    needs the values to be actual JSON objects (not double-encoded strings)
+    when the column is declared as ``JSON``.
+
+    This is idempotent — rows that are already valid JSON objects are left
+    untouched.
+    """
+    import json as _json
+
+    # --- NewsItem.key_points ---
+    rows = await conn.exec_driver_sql(
+        "SELECT id, key_points FROM newsitem WHERE typeof(key_points) = 'text'"
+    )
+    for row in rows.fetchall():
+        rid, raw = row
+        try:
+            parsed = _json.loads(raw)
+            if not isinstance(parsed, list):
+                parsed = [str(parsed)]
+            await conn.exec_driver_sql(
+                "UPDATE newsitem SET key_points = ? WHERE id = ?",
+                (_json.dumps(parsed, ensure_ascii=False), rid),
+            )
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+    # --- NewsItem.tags ---
+    rows = await conn.exec_driver_sql(
+        "SELECT id, tags FROM newsitem WHERE typeof(tags) = 'text'"
+    )
+    for row in rows.fetchall():
+        rid, raw = row
+        try:
+            parsed = _json.loads(raw)
+            if not isinstance(parsed, list):
+                parsed = []
+            await conn.exec_driver_sql(
+                "UPDATE newsitem SET tags = ? WHERE id = ?",
+                (_json.dumps(parsed, ensure_ascii=False), rid),
+            )
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+    # --- DailySummary.stats_json ---
+    rows = await conn.exec_driver_sql(
+        "SELECT id, stats_json FROM dailysummary WHERE stats_json IS NOT NULL AND typeof(stats_json) = 'text'"
+    )
+    for row in rows.fetchall():
+        rid, raw = row
+        try:
+            parsed = _json.loads(raw)
+            if not isinstance(parsed, dict):
+                parsed = {}
+            await conn.exec_driver_sql(
+                "UPDATE dailysummary SET stats_json = ? WHERE id = ?",
+                (_json.dumps(parsed, ensure_ascii=False), rid),
+            )
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+
 async def init_db():
     """Create the database tables if they don't exist."""
     async with engine.begin() as conn:
@@ -166,6 +230,7 @@ async def init_db():
         await _migrate_dailysummary_date_uniqueness(conn)
         await _seed_default_board(conn)
         await _ensure_feedback_uniqueness(conn)
+        await _migrate_json_columns(conn)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

@@ -32,6 +32,11 @@ class SourceAdapter(ABC):
         board: "Board",
         session: AsyncSession,
         one_time_preference: str | None = None,
-    ) -> "DailySummaryResponse | None":
-        """Produce today's summary for this board."""
+    ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
+        """Produce today's summary for this board.
+
+        Returns:
+            (summary_or_none, content_fallback) where content_fallback maps
+            article URL -> pre-fetched body text for RAG ingest.
+        """
         raise NotImplementedError

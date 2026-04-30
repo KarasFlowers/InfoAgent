@@ -1,8 +1,9 @@
 import asyncio
+import hashlib
 import feedparser
 import httpx
 from pydantic import ValidationError
-from app.models.schemas import RSSItem, RSSResponse
+from app.models.schemas import ContentItem, RSSItem, RSSResponse
 from app.services.redis_service import redis_service
 import logging
 
@@ -102,3 +103,26 @@ async def fetch_all_feeds(urls: list[str]) -> list[RSSResponse]:
             logger.error(f"Fetch task failed with exception: {result}")
             
     return valid_results
+
+
+def rss_responses_to_content_items(responses: list[RSSResponse]) -> list[ContentItem]:
+    """Convert a list of RSSResponse objects into unified ContentItem list."""
+    items: list[ContentItem] = []
+    for feed in responses:
+        source_url = feed.source_url
+        for rss_item in feed.items:
+            native_id = hashlib.md5(rss_item.link.encode()).hexdigest()[:12]
+            items.append(
+                ContentItem(
+                    id=f"rss:feed:{native_id}",
+                    source_type="rss",
+                    title=rss_item.title,
+                    url=rss_item.link,
+                    content=rss_item.summary[:300] if rss_item.summary else None,
+                    author=None,
+                    published_at=rss_item.published or "",
+                    source_name=rss_item.source or source_url,
+                    metadata={"feed_url": source_url},
+                )
+            )
+    return items

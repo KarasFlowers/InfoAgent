@@ -92,7 +92,7 @@ async def _async_daily_push() -> None:
                     continue
 
                 try:
-                    summary = await adapter.produce(board=board, session=session)
+                    summary, content_fallback = await adapter.produce(board=board, session=session)
                 except Exception:
                     logger.exception("Adapter '%s' failed for board '%s'", board.source_type, board.slug)
                     continue
@@ -115,7 +115,8 @@ async def _async_daily_push() -> None:
                             if item.original_link and not item.original_link.startswith("llm://")
                         ]
                         if article_urls:
-                            enqueue_for_ingest(article_urls)
+                            fb = {u: content_fallback[u] for u in article_urls if u in content_fallback}
+                            enqueue_for_ingest(article_urls, fallback_contents=fb if fb else None)
 
             if summary:
                 try:

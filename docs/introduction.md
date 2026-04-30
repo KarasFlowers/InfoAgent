@@ -164,6 +164,8 @@ InfoAgent 是一个**每日科技简报智能聚合系统**，核心价值在于
                     │  LLM Service     │
                     │  - 质量评分       │
                     │  - 摘要生成       │
+                    │  - 文章去重       │
+                    │  - 多样性控制     │
                     │  - Persona 注入  │
                     └────────┬─────────┘
                              │
@@ -739,13 +741,33 @@ data: [DONE]
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 3. LLM 驱动的质量过滤
+### 3. LLM 驱动的质量过滤与去重
 
 不是简单聚合，而是通过 LLM 对每篇文章进行质量评分：
 
 - **相关性评估**：是否与科技/AI/编程相关
 - **新闻价值**：是否为有价值的新闻，而非广告或公关稿
 - **教育意义**：是否具有讨论或学习价值
+
+**文章去重机制**：
+
+生成简报时自动排除过去 3 天已展示的文章，避免用户重复看到相同内容：
+
+```python
+recent_urls = await db_service.get_recent_article_urls(session, days=3)
+raw_articles = [a for a in raw_articles if a["link"] not in recent_urls]
+```
+
+**多样性控制**：
+
+用户偏好最多只影响 30-40% 的文章，防止信息茧房：
+
+```
+IMPORTANT: These preferences should influence article PRIORITY,
+but do NOT let them dominate the entire briefing. At most 30-40%
+of articles should match user interests — the rest should cover
+other important news of the day for breadth.
+```
 
 ### 4. 可观测性设计
 
@@ -898,4 +920,4 @@ www.trychroma.com/)
 
 ---
 
-*最后更新：2026年4月22日*
+*最后更新：2026年4月28日*

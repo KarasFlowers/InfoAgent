@@ -768,7 +768,7 @@ function togglePersonaPanel() {
     const panel = document.getElementById('persona-panel');
     panel.classList.toggle('open');
     if (panel.classList.contains('open')) {
-        loadPersonaInstructions();
+        loadPersonaData();
         fetchSystemMetrics();
         loadExplicitPreferences();
     }
@@ -1195,10 +1195,6 @@ async function loadHistoryData(target = 'history') {
             listContainer.appendChild(empty);
             return;
         }
-
-        latestHistoryArchive.forEach((item) => {
-            listContainer.appendChild(createArchiveCard(item));
-        });
 
         latestHistoryArchive.forEach((entry) => {
             const item = document.createElement('button');

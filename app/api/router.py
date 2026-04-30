@@ -231,7 +231,7 @@ async def generate_summary(
             logger.error("Board '%s' has unsupported source_type: %s", board_obj.slug, error)
             raise HTTPException(status_code=500, detail=str(error))
 
-        summary = await adapter.produce(
+        summary, content_fallback = await adapter.produce(
             board=board_obj,
             session=session,
             one_time_preference=preference,
@@ -273,7 +273,8 @@ async def generate_summary(
         if settings.RAG_BACKGROUND_INGEST_ENABLED:
             from app.services.rag_service import enqueue_for_ingest
             article_urls = [item.original_link for item in summary.top_news if item.original_link]
-            enqueue_for_ingest(article_urls)
+            fallback = {u: content_fallback[u] for u in article_urls if u in content_fallback}
+            enqueue_for_ingest(article_urls, fallback_contents=fallback if fallback else None)
 
         stored_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
         final = stored_summary or summary
@@ -468,8 +469,20 @@ async def create_board(
     existing = await db_service.get_board_by_slug(session, payload.slug)
     if existing:
         raise HTTPException(status_code=409, detail=f"Board '{payload.slug}' already exists.")
-    if payload.source_type not in ("rss", "pure_llm"):
-        raise HTTPException(status_code=400, detail="source_type must be 'rss' or 'pure_llm'.")
+    from app.services.source_adapters import VALID_SOURCE_TYPES
+    if payload.source_type not in VALID_SOURCE_TYPES:
+        raise HTTPException(status_code=400, detail=f"source_type must be one of {VALID_SOURCE_TYPES}.")
+    # Validate source_config against the per-type schema
+    from app.models.source_configs import SOURCE_CONFIG_MODELS
+    config_model = SOURCE_CONFIG_MODELS.get(payload.source_type)
+    if config_model and payload.source_config:
+        try:
+            config_model.model_validate(payload.source_config)
+        except Exception as val_err:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid source_config for type '{payload.source_type}': {val_err}",
+            )
     board = await db_service.create_board(
         session,
         slug=payload.slug,
@@ -514,10 +527,24 @@ async def update_board(
     """Update a board's metadata/config."""
     import json as _json
     updates = payload.model_dump(exclude_unset=True)
+    from app.services.source_adapters import VALID_SOURCE_TYPES
+    if "source_type" in updates and updates["source_type"] not in VALID_SOURCE_TYPES:
+        raise HTTPException(status_code=400, detail=f"source_type must be one of {VALID_SOURCE_TYPES}.")
+    # Validate source_config (as dict) before serialising to JSON string
     if "source_config" in updates and updates["source_config"] is not None:
+        st = updates.get("source_type")  # may be None if not changing
+        if st:
+            from app.models.source_configs import SOURCE_CONFIG_MODELS
+            config_model = SOURCE_CONFIG_MODELS.get(st)
+            if config_model:
+                try:
+                    config_model.model_validate(updates["source_config"])
+                except Exception as val_err:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Invalid source_config for type '{st}': {val_err}",
+                    )
         updates["source_config"] = _json.dumps(updates["source_config"], ensure_ascii=False)
-    if "source_type" in updates and updates["source_type"] not in ("rss", "pure_llm"):
-        raise HTTPException(status_code=400, detail="source_type must be 'rss' or 'pure_llm'.")
     board = await db_service.update_board(session, slug, updates)
     if not board:
         raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")

@@ -85,7 +85,13 @@ class Settings(BaseSettings):
 
     # HyDE (Hypothetical Document Embedding) query rewriting
     RAG_HYDE_ENABLED: bool = True
-    
+
+    # --- Multi-source scraper defaults ---
+    GITHUB_TOKEN: str | None = None               # Optional: raises GitHub API rate limit
+    HN_FETCH_TOP_STORIES: int = 30                # Hacker News: how many top stories to fetch
+    HN_MIN_SCORE: int = 100                       # Hacker News: minimum score filter
+    REDDIT_FETCH_COMMENTS: int = 5                # Reddit: top comments per post
+
     # Redis Cache
     REDIS_URL: str = "redis://localhost:6379"
 

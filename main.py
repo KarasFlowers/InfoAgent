@@ -50,6 +50,10 @@ async def lifespan(app: FastAPI):
     # Shutdown scheduler
     shutdown_scheduler()
 
+    # Close shared httpx client
+    from app.core.http_client import close_http_client
+    await close_http_client()
+
     # Shutdown: send sentinel per worker, then wait
     for _ in worker_tasks:
         try:

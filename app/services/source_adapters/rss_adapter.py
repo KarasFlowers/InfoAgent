@@ -31,7 +31,7 @@ class RSSAdapter(SourceAdapter):
         board: "Board",
         session: AsyncSession,
         one_time_preference: str | None = None,
-    ) -> "DailySummaryResponse | None":
+    ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
         # Resolve feed list: prefer per-board config, fall back to global.
         feeds: list[str] = []
         try:

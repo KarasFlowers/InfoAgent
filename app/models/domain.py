@@ -1,7 +1,7 @@
 from datetime import datetime, UTC
 from typing import Optional, List
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import UniqueConstraint, JSON, Column
 
 
 class Board(SQLModel, table=True):
@@ -16,7 +16,7 @@ class Board(SQLModel, table=True):
     icon: str = Field(default="")                 # emoji or lucide key
     description: str = Field(default="")
     system_prompt: str = Field(default="")        # editor prompt override
-    source_type: str = Field(default="rss")       # "rss" | "pure_llm"
+    source_type: str = Field(default="rss")       # "rss" | "pure_llm" | "hackernews" | "reddit" | "github" | "multi"
     source_config: str = Field(default="{}")      # JSON config string
     display_order: int = Field(default=0, index=True)
     is_active: bool = Field(default=True)
@@ -28,10 +28,9 @@ class NewsItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     headline: str = Field(index=True)
     category: str = Field(default="Uncategorized", index=True)
-    # Store key points as a JSON string
-    key_points: str 
-    # Store tags as a JSON string
-    tags: str = Field(default="[]")
+    # Stored as native JSON column (migrated from JSON-string in refactor)
+    key_points: list = Field(default=[], sa_column=Column(JSON))
+    tags: list = Field(default=[], sa_column=Column(JSON))
     original_link: str
     source: str
     
@@ -53,7 +52,7 @@ class DailySummary(SQLModel, table=True):
         default=None, foreign_key="board.id", index=True, ondelete="CASCADE"
     )
     overview: str
-    stats_json: Optional[str] = Field(default=None)
+    stats_json: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # cascade="all, delete-orphan" ensures ORM-level deletion removes related NewsItems

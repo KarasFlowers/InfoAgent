@@ -83,6 +83,10 @@ data/temp/
 data/t2i_templates/
 logs/*.log
 
+# Redis persistence
+dump.rdb
+*.rdb
+
 # Local tools
 tools/redis/
 tools/*.zip

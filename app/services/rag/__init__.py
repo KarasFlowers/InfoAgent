@@ -1,0 +1,49 @@
+"""
+RAG service sub-package.
+
+All public names are re-exported from ``_core`` so that existing
+imports via the facade at ``app.services.rag_service`` keep working.
+"""
+from app.services.rag._core import (  # noqa: F401
+    get_bi_encoder,
+    get_cross_encoder,
+    enqueue_for_ingest,
+    get_ingest_status,
+    ingest_worker_loop,
+    ingest,
+    delete_collections_by_urls,
+    fetch_article_text,
+    assess_content_quality,
+    split_into_chunks,
+    stream_article_overview,
+    generate_article_overview,
+    query_stream,
+    _ingested_urls,
+    _ingest_queue,
+    _ingest_status,
+    _bm25_indices,
+    _content_fallback,
+    _prepare_overview_context,
+)
+
+__all__ = [
+    "get_bi_encoder",
+    "get_cross_encoder",
+    "enqueue_for_ingest",
+    "get_ingest_status",
+    "ingest_worker_loop",
+    "ingest",
+    "delete_collections_by_urls",
+    "fetch_article_text",
+    "assess_content_quality",
+    "split_into_chunks",
+    "stream_article_overview",
+    "generate_article_overview",
+    "query_stream",
+    "_ingested_urls",
+    "_ingest_queue",
+    "_ingest_status",
+    "_bm25_indices",
+    "_content_fallback",
+    "_prepare_overview_context",
+]

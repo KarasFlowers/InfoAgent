@@ -1,4 +1,24 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class ContentItem(BaseModel):
+    """Unified content item from any source (RSS, HN, Reddit, GitHub, etc.)."""
+    id: str                                        # {source}:{subtype}:{native_id}
+    source_type: str                               # "rss" | "hackernews" | "reddit" | "github"
+    title: str
+    url: str
+    content: str | None = None                     # body text + appended comments
+    author: str | None = None
+    published_at: str = ""                         # ISO-8601 (empty when unavailable)
+    source_name: str = ""                          # display label (e.g. "r/LocalLLaMA")
+    metadata: dict = Field(default_factory=dict)   # score, subreddit, repo, etc.
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_published_at(cls, values: dict) -> dict:
+        if not values.get("published_at"):
+            values["published_at"] = ""
+        return values
 
 
 class Article(BaseModel):
