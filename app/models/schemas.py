@@ -51,6 +51,16 @@ class SummaryItem(BaseModel):
     feedback_sentiment: int | None = None
     persona_score: float | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_llm_field_names(cls, values: dict) -> dict:
+        """LLM occasionally returns 'title' instead of 'headline'."""
+        if not isinstance(values, dict):
+            return values
+        if "headline" not in values and "title" in values:
+            values["headline"] = values.pop("title")
+        return values
+
 
 class SummaryArchiveItem(BaseModel):
     date: str
@@ -89,3 +99,16 @@ class DailySummaryResponse(BaseModel):
     source_stats: dict[str, int] = Field(default_factory=dict)
     # Recommendation statistics for transparency
     recommendation_report: dict = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_top_news_items(cls, values: dict) -> dict:
+        """Ensure each top_news item has 'headline' even if LLM returned 'title'."""
+        if not isinstance(values, dict):
+            return values
+        top_news = values.get("top_news", [])
+        if isinstance(top_news, list):
+            for item in top_news:
+                if isinstance(item, dict) and "headline" not in item and "title" in item:
+                    item["headline"] = item.pop("title")
+        return values

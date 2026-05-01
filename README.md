@@ -1,140 +1,197 @@
 # InfoAgent
 
-InfoAgent is a FastAPI-based daily tech briefing app. It aggregates content from multiple sources (RSS, Hacker News, Reddit, GitHub, or pure LLM), asks DeepSeek to curate a structured summary, and provides article-level RAG chat with feedback-driven personalization.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green.svg)](https://fastapi.tiangolo.com)
+
+**[English](README.md) | [Chinese](README_zh.md)**
+
+> An intelligent daily tech briefing assistant powered by LLM and RAG.
+
+InfoAgent is a FastAPI-based daily tech briefing application that aggregates content from multiple sources (RSS, Hacker News, Reddit, GitHub, or pure LLM), uses DeepSeek to curate structured summaries, and provides article-level RAG chat with feedback-driven personalization.
 
 ## Features
 
-- **Multi-source aggregation** — RSS feeds, Hacker News top stories, Reddit posts, GitHub events/releases, or pure-LLM generated content
-- **Board system** — Create custom sections (boards) each with its own source type, system prompt, and persona
-- **Board Wizard** — AI-guided interactive wizard to configure new boards
-- **LLM-driven daily briefing** with categories, key points, and tags
-- **Article overview and follow-up Q&A** via RAG (Bi-Encoder + BM25 hybrid retrieval, Cross-Encoder rerank)
-- **Explicit like/dislike feedback** for personalized reranking
-- **Cross-source deduplication** — URL normalization + AI semantic dedup
-- **Daily email push** — automatically send briefings to subscribers
-- **Local persistence** with SQLite, ChromaDB, and Redis cache
+- **Multi-source aggregation** - RSS feeds, Hacker News top stories, Reddit posts, GitHub events/releases, or pure-LLM generated content
+- **Board system** - Create custom sections (boards) each with its own source type, system prompt, and persona
+- **Board Wizard** - AI-guided interactive wizard to configure new boards
+- **LLM-driven daily briefing** - Structured summaries with categories, key points, and tags
+- **Article Q&A via RAG** - Hybrid retrieval (Bi-Encoder + BM25) with Cross-Encoder reranking
+- **Personalized recommendations** - Explicit like/dislike feedback for tailored content
+- **Cross-source deduplication** - URL normalization + AI semantic deduplication
+- **Daily email push** - Automatically send briefings to subscribers
+- **Local persistence** - SQLite, ChromaDB, and Redis cache for offline-first design
+
+## Demo
+
+<!-- Add screenshots or GIFs here -->
+```
+Coming soon...
+```
 
 ## Quick Start
 
-### Docker
+### Docker (Recommended)
 
-1. Copy `.env.template` to `.env` and fill in your API key.
+1. Copy `.env.template` to `.env` and fill in your API key:
+   ```bash
+   cp .env.template .env
+   ```
+
 2. Start the stack:
+   ```bash
+   docker compose up -d
+   ```
 
-```bash
-docker compose up -d
-```
-
-3. Open `http://127.0.0.1:8000`.
+3. Open `http://127.0.0.1:8000` in your browser.
 
 ### Local Development
 
 1. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
 
-```bash
-python -m venv venv
-# Windows
-venv\Scripts\activate
-```
+   # Windows
+   venv\Scripts\activate
+
+   # Linux/macOS
+   source venv/bin/activate
+   ```
 
 2. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 3. Start the app:
+   ```bash
+   uvicorn main:app --reload
+   ```
 
-```bash
-uvicorn main:app --reload
-```
+4. Open `http://127.0.0.1:8000` in your browser.
 
-> Windows one-click: double-click `scripts\Open_Web_Dashboard.bat`. It auto-starts Redis, launches the backend, waits for `/api/v1/ping` to become healthy, and opens the dashboard.
+> **Windows one-click**: Double-click `scripts\Open_Web_Dashboard.bat`. It auto-starts Redis, launches the backend, waits for `/api/v1/ping` to become healthy, and opens the dashboard.
 
 ## Configuration
 
-Copy `.env.template` to `.env` and set at minimum `DEEPSEEK_API_KEY`.
+Copy `.env.template` to `.env` and configure your settings. At minimum, you need to set `DEEPSEEK_API_KEY`.
+
+### Environment Variables
 
 | Variable | Required | Default | Description |
-|---|---|---|---|
-| `DEEPSEEK_API_KEY` | **Yes** | — | DeepSeek API key for LLM summarization and RAG |
-| `SQLALCHEMY_DATABASE_URI` | No | `sqlite+aiosqlite:///./data/sqlite/infoagent.db` | Async SQLite DB path |
-| `CHROMA_DB_DIR` | No | `./data/chroma` | ChromaDB persistent store path |
+|----------|----------|---------|-------------|
+| `DEEPSEEK_API_KEY` | **Yes** | - | DeepSeek API key for LLM summarization and RAG |
+| `SQLALCHEMY_DATABASE_URI` | No | `sqlite+aiosqlite:///./data/sqlite/infoagent.db` | Async SQLite database path |
+| `CHROMA_DB_DIR` | No | `./data/chroma` | ChromaDB persistent storage path |
 | `CORS_ORIGINS` | No | `http://localhost:5173,...` | Comma-separated allowed frontend origins |
-| `GITHUB_TOKEN` | No | — | GitHub personal access token (increases rate limit) |
-| `HN_FETCH_TOP_STORIES` | No | `30` | How many top HN stories to fetch |
-| `HN_MIN_SCORE` | No | `100` | Minimum HN score threshold |
-| `REDDIT_FETCH_COMMENTS` | No | `5` | How many top comments to include per Reddit post |
-| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASSWORD` | No | — | Email push configuration (optional) |
+| `GITHUB_TOKEN` | No | - | GitHub personal access token (increases rate limit to 5000 req/hr) |
+| `HN_FETCH_TOP_STORIES` | No | `30` | Number of top Hacker News stories to fetch |
+| `HN_MIN_SCORE` | No | `100` | Minimum Hacker News score threshold |
+| `REDDIT_FETCH_COMMENTS` | No | `5` | Top comments to include per Reddit post |
+| `SMTP_HOST` | No | - | SMTP server for email push |
+| `SMTP_USER` | No | - | SMTP username |
+| `SMTP_PASSWORD` | No | - | SMTP password |
 | `EMAIL_SUBSCRIBERS` | No | `[]` | JSON list of subscriber email addresses |
-| `DAILY_PUSH_TIME` | No | `08:00` | Cron-like time for daily email dispatch |
+| `DAILY_PUSH_TIME` | No | `08:00` | Daily email dispatch time (HH:MM format) |
 
 ## Board Source Types
 
 Each board has a `source_type` that determines how content is fetched:
 
 | Source Type | Description | Example `source_config` |
-|---|---|---|
+|-------------|-------------|------------------------|
 | `rss` | Pull from RSS feeds | `{"feeds": ["https://hnrss.org/frontpage"]}` |
 | `hackernews` | Fetch HN top stories + comments | `{"fetch_top_stories": 30, "min_score": 100}` |
 | `reddit` | Fetch Reddit subreddit/user posts | `{"subreddits": [{"subreddit": "LocalLLaMA"}], "fetch_comments": 5}` |
 | `github` | Fetch GitHub user events & repo releases | `{"users": ["openai"], "repos": [{"owner": "openai", "repo": "whisper"}]}` |
 | `multi` | Combine multiple source types in parallel | `{"sources": {"rss": {"feeds": [...]}, "hackernews": {"min_score": 50}}}` |
-| `pure_llm` | LLM generates original content (no external data) | `{"items_per_day": 5, "style": "冷知识"}` |
+| `pure_llm` | LLM generates original content (no external data) | `{"items_per_day": 5, "style": "fun facts"}` |
 
 ## Architecture
 
 The service layer uses a **facade pattern** to keep imports backward-compatible while allowing large modules to be split internally:
 
-- `app/services/llm_service.py` — facade re-exporting `LLMService` and `llm_service` from `app/services/llm/`
-  - Internal mixins: `ScoringMixin`, `SummaryMixin`, `WeeklyMixin`, `WizardMixin`
-- `app/services/rag_service.py` — facade re-exporting all public names from `app/services/rag/_core.py`
-- `app/services/db_service.py` — facade re-exporting `DBService` and `db_service` from `app/services/repositories/`
-  - Internal repos: `SummaryRepo`, `PersonaRepo`, `BoardRepo`
+### Service Facades
 
-New code should import from the concrete subpackage (e.g. `from app.services.llm import LLMService`) rather than the facade.
+| Facade | Location | Exports |
+|--------|----------|---------|
+| `llm_service.py` | `app/services/llm/` | `LLMService`, `llm_service` |
+| `rag_service.py` | `app/services/rag/_core.py` | All public RAG functions |
+| `db_service.py` | `app/services/repositories/` | `DBService`, `db_service` |
 
-## Project Layout
+### Internal Structure
+
+- **LLM Service**: `ScoringMixin`, `SummaryMixin`, `WeeklyMixin`, `WizardMixin`
+- **RAG Service**: Hybrid retrieval pipeline with Bi-Encoder + BM25 + Cross-Encoder reranking
+- **DB Service**: `SummaryRepo`, `PersonaRepo`, `BoardRepo`
+
+> **Note**: New code should import from concrete subpackages (e.g., `from app.services.llm import LLMService`) rather than facades.
+
+## Project Structure
 
 ```text
 .
-├─ app/
-│  ├─ api/              # FastAPI routes (main + RAG)
-│  ├─ core/             # Config, DB, shared HTTP client, scheduler
-│  ├─ models/           # SQLModel + Pydantic + source config schemas
-│  ├─ scrapers/         # HN / Reddit / GitHub scrapers
-│  ├─ services/
-│  │  ├─ source_adapters/  # Pluggable board source adapters
-│  │  ├─ llm/              # LLM scoring, summary, wizard (facade: llm_service.py)
-│  │  ├─ rag/              # RAG pipeline (facade: rag_service.py)
-│  │  ├─ repositories/    # SummaryRepo, PersonaRepo, BoardRepo (facade: db_service.py)
-│  │  ├─ chat_history_service.py
-│  │  ├─ dedup_service.py
-│  │  ├─ email_service.py
-│  │  ├─ learning_service.py
-│  │  ├─ metrics_service.py
-│  │  └─ rss_service.py
-│  └─ web/              # Jinja templates and static assets
-├─ data/
-│  ├─ chroma/           # Local vector store
-│  └─ sqlite/           # Local SQLite database
-├─ docs/                # Project notes
-├─ logs/                # Local runtime logs
-├─ scripts/             # Windows launcher + Redis bootstrap
-├─ tests/               # API tests
-└─ tools/               # Local bundled tools such as Redis
+â"â" app/
+â"Â â"â" api/                    # FastAPI routes (main + RAG)
+â"Â â"â" core/                   # Config, DB, HTTP client, scheduler
+â"Â â"â" models/                 # SQLModel + Pydantic schemas
+â"Â â"â" scrapers/               # HN / Reddit / GitHub scrapers
+â"Â â"â" services/
+â"Â â"Â â"â" source_adapters/    # Pluggable board source adapters
+â"Â â"Â â"â" llm/                # LLM scoring, summary, wizard
+â"Â â"Â â"â" rag/                # RAG pipeline
+â"Â â"Â â"â" repositories/      # Database repositories
+â"Â â"Â â"â" chat_history_service.py
+â"Â â"Â â"â" dedup_service.py
+â"Â â"Â â"â" email_service.py
+â"Â â"Â â"â" learning_service.py
+â"Â â"Â â"â" metrics_service.py
+â"Â â"Â â"â" rss_service.py
+â"Â â"â" web/                    # Jinja templates + static assets
+â"â" data/
+â"Â â"â" chroma/                 # Local vector store
+â"Â â"â" sqlite/                 # Local SQLite database
+â"â" docs/                      # Project documentation
+â"â" logs/                      # Runtime logs
+â"â" scripts/                   # Windows launcher + Redis bootstrap
+â"â" tests/                     # Test suite
+â"â" tools/                     # Bundled tools (Redis, etc.)
 ```
 
-## Important Paths
+## Key Files
 
-- Web entry: `main.py`
-- App package: `app/`
-- Frontend assets: `app/web/static/`
-- Templates: `app/web/templates/`
-- SQLite DB: `data/sqlite/infoagent.db`
-- Chroma store: `data/chroma/`
-- Windows launcher: `scripts/Open_Web_Dashboard.bat`
+| Path | Description |
+|------|-------------|
+| `main.py` | Application entry point |
+| `app/` | Main application package |
+| `app/web/static/` | Frontend static assets |
+| `app/web/templates/` | Jinja2 HTML templates |
+| `data/sqlite/infoagent.db` | SQLite database |
+| `data/chroma/` | ChromaDB vector store |
+| `scripts/Open_Web_Dashboard.bat` | Windows one-click launcher |
+
+## Tech Stack
+
+- **Backend**: FastAPI, SQLModel, APScheduler
+- **LLM**: DeepSeek API, OpenAI SDK
+- **RAG**: Sentence Transformers, ChromaDB, BM25
+- **Database**: SQLite (async), Redis (cache)
+- **Scraping**: httpx, feedparser, BeautifulSoup, trafilatura
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## License
 
-MIT
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+Made with by [KarasFlowers](https://github.com/KarasFlowers)
