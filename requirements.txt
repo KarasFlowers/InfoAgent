@@ -20,6 +20,10 @@ sentence-transformers>=3.0.0
 chromadb>=0.5.0
 rank-bm25>=0.2.2
 
+# MCP (Model Context Protocol)
+mcp>=1.0.0
+fastmcp>=2.0.0
+
 # Web Scraping
 beautifulsoup4>=4.12.3
 trafilatura>=1.15.0
