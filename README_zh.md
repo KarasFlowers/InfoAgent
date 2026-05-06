@@ -55,7 +55,30 @@ docker compose up -d
 # 打开 http://127.0.0.1:8000
 ```
 
-### 本地开发
+### 一键启动（本地推荐）
+
+项目自带启动脚本，自动处理 **虚拟环境创建、依赖安装、.env 配置、Redis 启动、模型下载、打开浏览器** 全流程：
+
+```bash
+# macOS / Linux
+chmod +x scripts/start.sh
+./scripts/start.sh
+
+# Windows — 双击或运行：
+scripts\Open_Web_Dashboard.bat
+```
+
+首次运行时脚本会自动：
+1. 创建虚拟环境并安装依赖
+2. 引导你输入 DeepSeek API Key（自动生成 `.env`）
+3. 检查/启动 Redis
+4. 预下载 RAG 嵌入模型（~650 MB，仅首次）
+5. 启动后端并在浏览器中打开仪表板
+
+### 手动部署
+
+<details>
+<summary>点击展开详细步骤</summary>
 
 ```bash
 # 1. 克隆仓库
@@ -78,18 +101,20 @@ pip install -r requirements.txt
 cp .env.template .env
 # 编辑 .env，设置你的 DEEPSEEK_API_KEY
 
-# 5. 启动 Redis（如未运行）
-# Windows：双击 scripts\start_redis.bat 或手动启动 Redis
-# Linux / macOS：redis-server
+# 5.（可选）预下载 RAG 模型，避免首次请求延迟
+python scripts/download_models.py
 
-# 6. 启动应用
+# 6. 启动 Redis（如未运行）
+# Windows：.bat 启动器会自动处理
+# Linux / macOS：redis-server --daemonize yes
+
+# 7. 启动应用
 uvicorn main:app --reload
 
-# 7. 浏览器访问
-# 打开 http://127.0.0.1:8000
+# 8. 浏览器打开 http://127.0.0.1:8000
 ```
 
-> **Windows 一键启动**：双击 `scripts\Open_Web_Dashboard.bat`。它会自动启动 Redis、启动后端服务、等待 `/api/v1/ping` 健康检查通过，然后打开仪表板。
+</details>
 
 ## 配置
 
@@ -188,6 +213,8 @@ uvicorn main:app --reload
 | `data/sqlite/infoagent.db` | SQLite 数据库 |
 | `data/chroma/` | ChromaDB 向量存储 |
 | `scripts/Open_Web_Dashboard.bat` | Windows 一键启动器 |
+| `scripts/start.sh` | macOS / Linux 一键启动器 |
+| `scripts/download_models.py` | 预下载 RAG 嵌入模型 |
 
 ## 技术栈
 

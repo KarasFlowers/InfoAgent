@@ -1,3 +1,7 @@
+# First-run bootstrap: ensure .env + data dirs exist before anything reads config
+from app.core.first_run import run_first_time_checks
+run_first_time_checks()
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 

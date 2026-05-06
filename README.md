@@ -55,7 +55,30 @@ docker compose up -d
 # Visit http://127.0.0.1:8000
 ```
 
-### Local Development
+### One-Click Start (Recommended for Local)
+
+The project ships with launcher scripts that handle **venv creation, dependency installation, .env setup, Redis, model download, and browser opening** automatically:
+
+```bash
+# macOS / Linux
+chmod +x scripts/start.sh
+./scripts/start.sh
+
+# Windows — double-click or run:
+scripts\Open_Web_Dashboard.bat
+```
+
+On first run the script will:
+1. Create a virtual environment and install dependencies
+2. Prompt you to enter your DeepSeek API key (creates `.env` automatically)
+3. Check/start Redis
+4. Pre-download RAG embedding models (~650 MB, one-time)
+5. Start the backend and open the dashboard in your browser
+
+### Manual Setup
+
+<details>
+<summary>Click to expand step-by-step instructions</summary>
 
 ```bash
 # 1. Clone the repository
@@ -78,18 +101,20 @@ pip install -r requirements.txt
 cp .env.template .env
 # Edit .env and set your DEEPSEEK_API_KEY
 
-# 5. Start Redis (if not already running)
-# Windows: double-click scripts\start_redis.bat or start Redis manually
-# Linux / macOS: redis-server
+# 5. (Optional) Pre-download RAG models to avoid first-request delay
+python scripts/download_models.py
 
-# 6. Start the application
+# 6. Start Redis (if not already running)
+# Windows: the .bat launcher handles this automatically
+# Linux / macOS: redis-server --daemonize yes
+
+# 7. Start the application
 uvicorn main:app --reload
 
-# 7. Open in browser
-# Visit http://127.0.0.1:8000
+# 8. Open http://127.0.0.1:8000 in your browser
 ```
 
-> **Windows one-click**: Double-click `scripts\Open_Web_Dashboard.bat`. It auto-starts Redis, launches the backend, waits for `/api/v1/ping` to become healthy, and opens the dashboard.
+</details>
 
 ## Configuration
 
@@ -188,6 +213,8 @@ The service layer uses a **facade pattern** to keep imports backward-compatible 
 | `data/sqlite/infoagent.db` | SQLite database |
 | `data/chroma/` | ChromaDB vector store |
 | `scripts/Open_Web_Dashboard.bat` | Windows one-click launcher |
+| `scripts/start.sh` | macOS / Linux one-click launcher |
+| `scripts/download_models.py` | Pre-download RAG embedding models |
 
 ## Tech Stack
 
