@@ -8,7 +8,7 @@
 
 > An intelligent daily tech briefing assistant powered by LLM and RAG.
 
-InfoAgent is a FastAPI-based daily tech briefing application that aggregates content from multiple sources (RSS, Hacker News, Reddit, GitHub, or pure LLM), uses DeepSeek to curate structured summaries, and provides article-level RAG chat with feedback-driven personalization.
+InfoAgent is a FastAPI-based daily tech briefing application that aggregates content from multiple sources (RSS, Hacker News, Reddit, GitHub, or pure LLM), uses any OpenAI-compatible LLM to curate structured summaries, and provides article-level RAG chat with feedback-driven personalization.
 
 ## Features
 
@@ -19,7 +19,8 @@ InfoAgent is a FastAPI-based daily tech briefing application that aggregates con
 - **Article Q&A via RAG** - Hybrid retrieval (Bi-Encoder + BM25) with Cross-Encoder reranking
 - **Personalized recommendations** - Explicit like/dislike feedback for tailored content
 - **Cross-source deduplication** - URL normalization + AI semantic deduplication
-- **Daily email push** - Automatically send briefings to subscribers
+- **Multi-channel notifications** - Push briefings via email, webhook, Bark (iOS), or Telegram
+- **MCP Server** - Expose all capabilities to AI assistants via Model Context Protocol
 - **Local persistence** - SQLite, ChromaDB, and Redis cache for offline-first design
 
 ## Demo
@@ -35,7 +36,7 @@ Coming soon...
 
 - Python 3.11+
 - [Redis](https://redis.io/) (for caching)
-- [DeepSeek API Key](https://platform.deepseek.com/)
+- An OpenAI-compatible LLM API key (e.g. [DeepSeek](https://platform.deepseek.com/), OpenAI, etc.)
 
 ### Docker (Recommended)
 
@@ -46,7 +47,7 @@ cd InfoAgent
 
 # 2. Configure environment
 cp .env.template .env
-# Edit .env and set your DEEPSEEK_API_KEY
+# Edit .env and set LLM_API_KEY (or DEEPSEEK_API_KEY for legacy compat)
 
 # 3. Start the stack
 docker compose up -d
@@ -70,7 +71,7 @@ scripts\Open_Web_Dashboard.bat
 
 On first run the script will:
 1. Create a virtual environment and install dependencies
-2. Prompt you to enter your DeepSeek API key (creates `.env` automatically)
+2. Prompt you to enter your LLM API key (creates `.env` automatically)
 3. Check/start Redis
 4. Pre-download RAG embedding models (~650 MB, one-time)
 5. Start the backend and open the dashboard in your browser
@@ -99,7 +100,7 @@ pip install -r requirements.txt
 
 # 4. Configure environment
 cp .env.template .env
-# Edit .env and set your DEEPSEEK_API_KEY
+# Edit .env and set LLM_API_KEY (or DEEPSEEK_API_KEY for legacy compat)
 
 # 5. (Optional) Pre-download RAG models to avoid first-request delay
 python scripts/download_models.py
@@ -118,13 +119,18 @@ uvicorn main:app --reload
 
 ## Configuration
 
-Copy `.env.template` to `.env` and configure your settings. At minimum, you need to set `DEEPSEEK_API_KEY`.
+Copy `.env.template` to `.env` and configure your settings. At minimum, you need to set `LLM_API_KEY` (or the legacy `DEEPSEEK_API_KEY`).
 
 ### Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | **Yes** | - | DeepSeek API key for LLM summarization and RAG |
+| `LLM_API_KEY` | **Yes** | - | API key for any OpenAI-compatible LLM provider |
+| `LLM_MODEL` | No | `deepseek-chat` | Model name to use for all LLM calls |
+| `LLM_BASE_URL` | No | `https://api.deepseek.com/v1` | Base URL of the LLM API |
+| `LLM_TIMEOUT` | No | `180` | Request timeout in seconds |
+| `LLM_MAX_RETRIES` | No | `1` | Max retries on transient failures |
+| `DEEPSEEK_API_KEY` | No | - | Legacy alias — used as fallback when `LLM_API_KEY` is unset |
 | `SQLALCHEMY_DATABASE_URI` | No | `sqlite+aiosqlite:///./data/sqlite/infoagent.db` | Async SQLite database path |
 | `CHROMA_DB_DIR` | No | `./data/chroma` | ChromaDB persistent storage path |
 | `CORS_ORIGINS` | No | `http://localhost:5173,...` | Comma-separated allowed frontend origins |
@@ -136,7 +142,13 @@ Copy `.env.template` to `.env` and configure your settings. At minimum, you need
 | `SMTP_USER` | No | - | SMTP username |
 | `SMTP_PASSWORD` | No | - | SMTP password |
 | `EMAIL_SUBSCRIBERS` | No | `[]` | JSON list of subscriber email addresses |
-| `DAILY_PUSH_TIME` | No | `08:00` | Daily email dispatch time (HH:MM format) |
+| `DAILY_PUSH_TIME` | No | `08:00` | Daily push time (HH:MM format) |
+| `NOTIFY_CHANNELS` | No | `email` | Comma-separated channels: `email,webhook,bark,telegram` |
+| `WEBHOOK_URL` | No | - | Generic webhook endpoint (POST JSON) |
+| `WEBHOOK_SECRET` | No | - | HMAC-SHA256 signing key for webhook |
+| `BARK_URL` | No | - | Bark iOS push URL (e.g. `https://api.day.app/KEY`) |
+| `TELEGRAM_BOT_TOKEN` | No | - | Telegram bot token |
+| `TELEGRAM_CHAT_ID` | No | - | Telegram chat/group ID to send messages to |
 
 ## Board Source Types
 
@@ -150,6 +162,40 @@ Each board has a `source_type` that determines how content is fetched:
 | `github` | Fetch GitHub user events & repo releases | `{"users": ["openai"], "repos": [{"owner": "openai", "repo": "whisper"}]}` |
 | `multi` | Combine multiple source types in parallel | `{"sources": {"rss": {"feeds": [...]}, "hackernews": {"min_score": 50}}}` |
 | `pure_llm` | LLM generates original content (no external data) | `{"items_per_day": 5, "style": "fun facts"}` |
+
+## MCP Server (AI Agent Integration)
+
+InfoAgent exposes its capabilities as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, allowing AI assistants like Claude, Cursor, and Windsurf to directly query your briefings, ask RAG questions, and manage preferences.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_daily_summary` | Read today's briefing for a board |
+| `generate_summary` | Trigger summary generation |
+| `ask_article` | RAG Q&A about any ingested article |
+| `search_news` | Keyword search across news history |
+| `list_boards` | List all content boards |
+| `add_feedback` | Like/dislike articles for personalization |
+| `get_user_interests` | View current persona/preferences |
+| `get_system_status` | System health and config info |
+
+### Usage
+
+```bash
+# stdio transport (for IDE integrations like Cursor/Windsurf)
+python mcp_server.py
+
+# Or add to your MCP client config (e.g. claude_desktop_config.json):
+{
+  "mcpServers": {
+    "infoagent": {
+      "command": "python",
+      "args": ["path/to/InfoAgent/mcp_server.py"]
+    }
+  }
+}
+```
 
 ## Architecture
 
@@ -219,7 +265,7 @@ The service layer uses a **facade pattern** to keep imports backward-compatible 
 ## Tech Stack
 
 - **Backend**: FastAPI, SQLModel, APScheduler
-- **LLM**: DeepSeek API, OpenAI SDK
+- **LLM**: Any OpenAI-compatible API via configurable `LLMClient` (DeepSeek, OpenAI, etc.)
 - **RAG**: Sentence Transformers, ChromaDB, BM25
 - **Database**: SQLite (async), Redis (cache)
 - **Scraping**: httpx, feedparser, BeautifulSoup, trafilatura
