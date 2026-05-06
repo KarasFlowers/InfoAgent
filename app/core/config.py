@@ -57,9 +57,24 @@ class Settings(BaseSettings):
         "https://36kr.com/feed",
     ]
     
-    # LLM Configuration
+    # LLM Configuration — generic provider settings
+    LLM_MODEL: str = "deepseek-chat"
+    LLM_API_KEY: str | None = None
+    LLM_BASE_URL: str | None = None
+    LLM_TIMEOUT: int = 180
+    LLM_MAX_RETRIES: int = 1
+
+    # Legacy DeepSeek-specific keys (used as fallback when LLM_* is unset)
     DEEPSEEK_API_KEY: str | None = None
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
+
+    @property
+    def effective_llm_api_key(self) -> str | None:
+        return self.LLM_API_KEY or self.DEEPSEEK_API_KEY
+
+    @property
+    def effective_llm_base_url(self) -> str:
+        return self.LLM_BASE_URL or self.DEEPSEEK_BASE_URL
     
     # Database
     SQLALCHEMY_DATABASE_URI: str = "sqlite+aiosqlite:///./data/sqlite/infoagent.db"
@@ -75,6 +90,21 @@ class Settings(BaseSettings):
     SMTP_FROM: str | None = None
     EMAIL_SUBSCRIBERS: list[str] = []
     DAILY_PUSH_TIME: str = "08:00"  # Format HH:MM
+
+    # Webhook Notification
+    WEBHOOK_URL: str | None = None            # Generic webhook (POST JSON)
+    WEBHOOK_SECRET: str | None = None         # Optional HMAC signing key
+
+    # Bark Push (iOS)
+    BARK_URL: str | None = None               # e.g. https://api.day.app/YOUR_KEY
+    BARK_GROUP: str = "InfoAgent"
+
+    # Telegram Bot
+    TELEGRAM_BOT_TOKEN: str | None = None
+    TELEGRAM_CHAT_ID: str | None = None
+
+    # Notification channels to enable (comma-separated: email,webhook,bark,telegram)
+    NOTIFY_CHANNELS: str = "email"
     
     # RAG Vector Store
     CHROMA_DB_DIR: str = "./data/chroma"
