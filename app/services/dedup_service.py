@@ -2,14 +2,17 @@
 Deduplication service: URL-based cross-source merge + AI semantic dedup.
 Ported from Horizon's orchestrator logic.
 """
+from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI
-
 from app.models.schemas import ContentItem
+
+if TYPE_CHECKING:
+    from app.services.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +151,7 @@ def _parse_json_response(text: str) -> dict | None:
 
 async def merge_topic_duplicates(
     items: list[ContentItem],
-    llm_client: AsyncOpenAI,
-    model: str = "deepseek-chat",
+    llm_client: LLMClient,
 ) -> list[ContentItem]:
     """Send titles to LLM, identify duplicate groups, merge.
 
@@ -165,8 +167,7 @@ async def merge_topic_duplicates(
     items_text = "\n\n".join(lines)
 
     try:
-        response = await llm_client.chat.completions.create(
-            model=model,
+        response = await llm_client.chat(
             messages=[
                 {"role": "system", "content": TOPIC_DEDUP_SYSTEM},
                 {"role": "user", "content": TOPIC_DEDUP_USER.format(items=items_text)},

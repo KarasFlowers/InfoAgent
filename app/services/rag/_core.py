@@ -499,18 +499,14 @@ async def stream_article_overview(url: str) -> AsyncGenerator[str, None]:
     from app.services.llm_service import llm_service
     from app.services.metrics_service import metrics_service
 
-    stream = await llm_service.client.chat.completions.create(
-        model="deepseek-chat",
+    stream = await llm_service.llm.chat_stream(
         messages=[{"role": "user", "content": _build_article_overview_prompt(context)}],
-        stream=True,
-        stream_options={"include_usage": True},
         max_tokens=700,
         temperature=0.3,
     )
 
     full_response = ""
     async for chunk in stream:
-        # Check if usage is in the chunk (OpenAI spec)
         if chunk.usage:
             await metrics_service.record_tokens(
                 chunk.usage.prompt_tokens, 
@@ -649,20 +645,12 @@ async def _hyde_rewrite(question: str) -> str:
     )
     try:
         from app.services.llm_service import llm_service
-        from app.services.metrics_service import metrics_service
 
-        resp = await llm_service.client.chat.completions.create(
-            model="deepseek-chat",
+        resp = await llm_service.llm.chat(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             temperature=0.7,
         )
-        
-        if resp.usage:
-            await metrics_service.record_tokens(
-                resp.usage.prompt_tokens, 
-                resp.usage.completion_tokens
-            )
             
         hyde_text = (resp.choices[0].message.content or "").strip()
         if hyde_text:
@@ -886,11 +874,8 @@ async def query_stream(question: str, url: str) -> AsyncGenerator[str, None]:
     from app.services.llm_service import llm_service
     from app.services.metrics_service import metrics_service
 
-    stream = await llm_service.client.chat.completions.create(
-        model="deepseek-chat",
+    stream = await llm_service.llm.chat_stream(
         messages=[{"role": "user", "content": prompt}],
-        stream=True,
-        stream_options={"include_usage": True},
         max_tokens=800,
     )
 
