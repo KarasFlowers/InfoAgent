@@ -31,44 +31,63 @@ Coming soon...
 
 ## Quick Start
 
+### Prerequisites
+
+- Python 3.11+
+- [Redis](https://redis.io/) (for caching)
+- [DeepSeek API Key](https://platform.deepseek.com/)
+
 ### Docker (Recommended)
 
-1. Copy `.env.template` to `.env` and fill in your API key:
-   ```bash
-   cp .env.template .env
-   ```
+```bash
+# 1. Clone the repository
+git clone https://github.com/KarasFlowers/InfoAgent.git
+cd InfoAgent
 
-2. Start the stack:
-   ```bash
-   docker compose up -d
-   ```
+# 2. Configure environment
+cp .env.template .env
+# Edit .env and set your DEEPSEEK_API_KEY
 
-3. Open `http://127.0.0.1:8000` in your browser.
+# 3. Start the stack
+docker compose up -d
+
+# 4. Open in browser
+# Visit http://127.0.0.1:8000
+```
 
 ### Local Development
 
-1. Create and activate a virtual environment:
-   ```bash
-   python -m venv venv
+```bash
+# 1. Clone the repository
+git clone https://github.com/KarasFlowers/InfoAgent.git
+cd InfoAgent
 
-   # Windows
-   venv\Scripts\activate
+# 2. Create and activate a virtual environment
+python -m venv venv
 
-   # Linux/macOS
-   source venv/bin/activate
-   ```
+# Windows
+venv\Scripts\activate
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Linux / macOS
+source venv/bin/activate
 
-3. Start the app:
-   ```bash
-   uvicorn main:app --reload
-   ```
+# 3. Install dependencies
+pip install -r requirements.txt
 
-4. Open `http://127.0.0.1:8000` in your browser.
+# 4. Configure environment
+cp .env.template .env
+# Edit .env and set your DEEPSEEK_API_KEY
+
+# 5. Start Redis (if not already running)
+# Windows: double-click scripts\start_redis.bat or start Redis manually
+# Linux / macOS: redis-server
+
+# 6. Start the application
+uvicorn main:app --reload
+
+# 7. Open in browser
+# Visit http://127.0.0.1:8000
+```
 
 > **Windows one-click**: Double-click `scripts\Open_Web_Dashboard.bat`. It auto-starts Redis, launches the backend, waits for `/api/v1/ping` to become healthy, and opens the dashboard.
 
@@ -131,31 +150,31 @@ The service layer uses a **facade pattern** to keep imports backward-compatible 
 
 ```text
 .
-â"â" app/
-â"Â â"â" api/                    # FastAPI routes (main + RAG)
-â"Â â"â" core/                   # Config, DB, HTTP client, scheduler
-â"Â â"â" models/                 # SQLModel + Pydantic schemas
-â"Â â"â" scrapers/               # HN / Reddit / GitHub scrapers
-â"Â â"â" services/
-â"Â â"Â â"â" source_adapters/    # Pluggable board source adapters
-â"Â â"Â â"â" llm/                # LLM scoring, summary, wizard
-â"Â â"Â â"â" rag/                # RAG pipeline
-â"Â â"Â â"â" repositories/      # Database repositories
-â"Â â"Â â"â" chat_history_service.py
-â"Â â"Â â"â" dedup_service.py
-â"Â â"Â â"â" email_service.py
-â"Â â"Â â"â" learning_service.py
-â"Â â"Â â"â" metrics_service.py
-â"Â â"Â â"â" rss_service.py
-â"Â â"â" web/                    # Jinja templates + static assets
-â"â" data/
-â"Â â"â" chroma/                 # Local vector store
-â"Â â"â" sqlite/                 # Local SQLite database
-â"â" docs/                      # Project documentation
-â"â" logs/                      # Runtime logs
-â"â" scripts/                   # Windows launcher + Redis bootstrap
-â"â" tests/                     # Test suite
-â"â" tools/                     # Bundled tools (Redis, etc.)
+├── app/
+│   ├── api/                    # FastAPI routes (main + RAG)
+│   ├── core/                   # Config, DB, HTTP client, scheduler
+│   ├── models/                 # SQLModel + Pydantic schemas
+│   ├── scrapers/               # HN / Reddit / GitHub scrapers
+│   ├── services/
+│   │   ├── source_adapters/    # Pluggable board source adapters
+│   │   ├── llm/                # LLM scoring, summary, wizard
+│   │   ├── rag/                # RAG pipeline
+│   │   ├── repositories/      # Database repositories
+│   │   ├── chat_history_service.py
+│   │   ├── dedup_service.py
+│   │   ├── email_service.py
+│   │   ├── learning_service.py
+│   │   ├── metrics_service.py
+│   │   └── rss_service.py
+│   └── web/                    # Jinja templates + static assets
+├── data/
+│   ├── chroma/                 # Local vector store
+│   └── sqlite/                 # Local SQLite database
+├── docs/                      # Project documentation
+├── logs/                      # Runtime logs
+├── scripts/                   # Windows launcher + Redis bootstrap
+├── tests/                     # Test suite
+└── tools/                     # Bundled tools (Redis, etc.)
 ```
 
 ## Key Files
