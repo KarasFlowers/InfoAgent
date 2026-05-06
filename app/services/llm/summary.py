@@ -1,7 +1,6 @@
 """Daily summary generation (RSS-based and pure-LLM)."""
 import json
 import logging
-import time
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.schemas import ContentItem, DailySummaryResponse, RSSResponse
 from app.services.db_service import db_service
-from app.services.metrics_service import metrics_service
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +100,7 @@ class SummaryMixin:
         5. Quality scoring
         6. LLM summarisation
         """
-        if not settings.DEEPSEEK_API_KEY:
+        if not settings.effective_llm_api_key:
             logger.error("Attempted to call LLM without API key configured.")
             return None, {}
 
@@ -246,7 +244,7 @@ class SummaryMixin:
             for i, a in enumerate(high_quality)
         ]
         try:
-            deduped_ci = await merge_topic_duplicates(scored_ci, self.client)
+            deduped_ci = await merge_topic_duplicates(scored_ci, self.llm)
             if len(deduped_ci) < len(scored_ci):
                 logger.info(
                     "AI semantic dedup: %d -> %d items",
@@ -264,10 +262,8 @@ class SummaryMixin:
         input_json = json.dumps(high_quality, ensure_ascii=False)
 
         try:
-            start_time = time.time()
-            logger.info("Calling DeepSeek chat.completions for daily summary (articles=%d)...", len(high_quality))
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+            logger.info("Calling LLM chat.completions for daily summary (articles=%d)...", len(high_quality))
+            response = await self.llm.chat(
                 messages=[
                     {"role": "system", "content": system_prompt + persona_context + ("\nYou must respond in JSON format." if "json" not in (system_prompt + persona_context).lower() else "")},
                     {
@@ -279,15 +275,7 @@ class SummaryMixin:
                 temperature=0.3,
                 max_tokens=4000,
             )
-            duration = time.time() - start_time
-            logger.info("DeepSeek summary response received in %.2fs", duration)
-
-            if response.usage:
-                await metrics_service.record_tokens(
-                    response.usage.prompt_tokens, 
-                    response.usage.completion_tokens
-                )
-            await metrics_service.record_latency(duration)
+            logger.info("LLM summary response received")
 
             parsed_json = json.loads(response.choices[0].message.content)
             top_news = parsed_json.get("top_news", [])
@@ -321,7 +309,7 @@ class SummaryMixin:
 
         Used by boards like 冷知识 / 英语学习 / 名人名言 that don't rely on RSS.
         """
-        if not settings.DEEPSEEK_API_KEY:
+        if not settings.effective_llm_api_key:
             logger.error("Attempted pure-LLM generation without API key.")
             return None
 
@@ -378,14 +366,12 @@ class SummaryMixin:
         user_content = f"Today's Date: {datetime.now().strftime('%Y-%m-%d')}. Produce today's items now."
 
         try:
-            start_time = time.time()
             logger.info(
-                "Calling DeepSeek chat.completions for pure-LLM board '%s' (items=%d)...",
+                "Calling LLM chat.completions for pure-LLM board '%s' (items=%d)...",
                 board.slug,
                 items_per_day,
             )
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+            response = await self.llm.chat(
                 messages=[
                     {"role": "system", "content": system_content},
                     {"role": "user", "content": user_content},
@@ -394,15 +380,7 @@ class SummaryMixin:
                 temperature=0.7,
                 max_tokens=3000,
             )
-            duration = time.time() - start_time
-            logger.info("DeepSeek pure-LLM response received in %.2fs", duration)
-
-            if response.usage:
-                await metrics_service.record_tokens(
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                )
-            await metrics_service.record_latency(duration)
+            logger.info("LLM pure-LLM response received for board '%s'", board.slug)
 
             parsed = json.loads(response.choices[0].message.content)
             top_news = parsed.get("top_news", [])

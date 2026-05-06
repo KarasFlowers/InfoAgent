@@ -3,7 +3,6 @@ import json
 import logging
 
 from app.core.config import settings
-from app.services.metrics_service import metrics_service
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ class WizardMixin:
           } | None
         }
         """
-        if not settings.DEEPSEEK_API_KEY:
+        if not settings.effective_llm_api_key:
             return {"reply": "LLM API key 未配置。", "ready": False, "config": None}
 
         system_prompt = """你是 InfoAgent 的「板块配置向导」，帮助用户配置一个新的内容板块。
@@ -93,18 +92,12 @@ class WizardMixin:
             full_messages.append({"role": role, "content": str(m.get("content", ""))})
 
         try:
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+            response = await self.llm.chat(
                 messages=full_messages,
                 response_format={"type": "json_object"},
                 temperature=0.4,
                 max_tokens=1200,
             )
-            if response.usage:
-                await metrics_service.record_tokens(
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                )
             raw = response.choices[0].message.content or "{}"
             parsed = json.loads(raw)
             # Normalize
@@ -150,7 +143,7 @@ class WizardMixin:
         one to be saved as a long-term persona, capturing their *real* intent
         rather than the literal article subject.
         """
-        if not settings.DEEPSEEK_API_KEY:
+        if not settings.effective_llm_api_key:
             return []
 
         kp_text = "\n".join(f"- {p}" for p in (key_points or []))
@@ -175,8 +168,7 @@ class WizardMixin:
         )
 
         try:
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+            response = await self.llm.chat(
                 messages=[
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": user_content},
@@ -185,11 +177,6 @@ class WizardMixin:
                 temperature=0.5,
                 max_tokens=300,
             )
-            if response.usage:
-                await metrics_service.record_tokens(
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                )
             data = json.loads(response.choices[0].message.content)
             options = data.get("options", []) if isinstance(data, dict) else []
             cleaned = [str(o).strip() for o in options if isinstance(o, str) and o.strip()]

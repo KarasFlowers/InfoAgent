@@ -1,9 +1,6 @@
 """LLM article quality scoring."""
 import json
 import logging
-import time
-
-from app.services.metrics_service import metrics_service
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +35,7 @@ Do NOT include any other text."""
         )
 
         try:
-            start_time = time.time()
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+            response = await self.llm.chat(
                 messages=[
                     {"role": "system", "content": scoring_prompt},
                     {"role": "user", "content": input_for_scoring},
@@ -49,13 +44,6 @@ Do NOT include any other text."""
                 temperature=0.1,
                 max_tokens=2000,
             )
-            duration = time.time() - start_time
-            
-            if response.usage:
-                await metrics_service.record_tokens(
-                    response.usage.prompt_tokens, 
-                    response.usage.completion_tokens
-                )
             
             result = response.choices[0].message.content
             parsed = json.loads(result)

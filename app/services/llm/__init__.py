@@ -8,9 +8,8 @@ llm_service`` continue to work through the facade in ``../llm_service.py``.
 """
 import logging
 
-from openai import AsyncOpenAI
-
 from app.core.config import settings
+from app.services.llm.client import LLMClient
 from app.services.llm.scoring import ScoringMixin
 from app.services.llm.summary import SummaryMixin
 from app.services.llm.weekly import WeeklyMixin
@@ -21,14 +20,12 @@ logger = logging.getLogger(__name__)
 
 class LLMService(ScoringMixin, SummaryMixin, WeeklyMixin, WizardMixin):
     def __init__(self) -> None:
-        if not settings.DEEPSEEK_API_KEY:
-            logger.warning("DEEPSEEK_API_KEY is not set. LLM features will fail.")
-        self.client = AsyncOpenAI(
-            api_key=settings.DEEPSEEK_API_KEY,
-            base_url=settings.DEEPSEEK_BASE_URL,
-            timeout=180.0,
-            max_retries=1,
-        )
+        if not settings.effective_llm_api_key:
+            logger.warning("LLM_API_KEY / DEEPSEEK_API_KEY is not set. LLM features will fail.")
+        self.llm = LLMClient(settings)
+        # Backward-compat: some call-sites still reference self.client
+        self.client = self.llm.raw
+        self.model = self.llm.model
 
 
 llm_service = LLMService()

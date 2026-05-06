@@ -2,7 +2,6 @@
 import logging
 
 from app.core.config import settings
-from app.services.metrics_service import metrics_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ class WeeklyMixin:
         """
         Synthesize multiple daily summaries into a long-form magazine style recap.
         """
-        if not settings.DEEPSEEK_API_KEY:
+        if not settings.effective_llm_api_key:
             return None
 
         # Build a dense representation for the week
@@ -49,8 +48,7 @@ class WeeklyMixin:
         week_data = "\n\n".join(daily_inputs)
 
         try:
-            response = await self.client.chat.completions.create(
-                model="deepseek-chat",
+            response = await self.llm.chat(
                 messages=[
                     {"role": "system", "content": WIRED_EDITOR_PROMPT},
                     {
@@ -61,12 +59,6 @@ class WeeklyMixin:
                 temperature=0.7,
                 max_tokens=2500,
             )
-
-            if response.usage:
-                await metrics_service.record_tokens(
-                    response.usage.prompt_tokens, 
-                    response.usage.completion_tokens
-                )
 
             return response.choices[0].message.content
         except Exception as error:
