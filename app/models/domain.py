@@ -21,6 +21,8 @@ class Board(SQLModel, table=True):
     display_order: int = Field(default=0, index=True)
     is_active: bool = Field(default=True)
     is_default: bool = Field(default=False)       # exactly one default per install
+    schedule: str = Field(default="")             # cron expr e.g. "08:00" or "*/6h"; empty = use global
+    notify_channels: str = Field(default="")      # comma-separated: "email,webhook,bark" ; empty = all configured
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
