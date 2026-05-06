@@ -46,6 +46,14 @@ async def _ensure_legacy_columns(conn) -> None:
     if "board_id" not in persona_columns:
         await conn.exec_driver_sql("ALTER TABLE userpersona ADD COLUMN board_id INTEGER")
 
+    # Board table: new columns added in P1 (schedule + notify_channels)
+    board_result = await conn.exec_driver_sql("PRAGMA table_info(board)")
+    board_columns = {row[1] for row in board_result.fetchall()}
+    if "schedule" not in board_columns:
+        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN schedule VARCHAR DEFAULT ''")
+    if "notify_channels" not in board_columns:
+        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN notify_channels VARCHAR DEFAULT ''")
+
 
 async def _migrate_dailysummary_date_uniqueness(conn) -> None:
     """

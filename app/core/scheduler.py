@@ -6,7 +6,7 @@ Currently registered jobs
 - **cleanup_old_data** – runs every 6 hours (and once on startup) to prune
   expired summaries, news items, and RAG collections.
 - **daily_push** - runs daily at configured time (default 08:00) to auto-generate
-  the briefing and email it to subscribers.
+  the briefing and notify via all configured channels (email, webhook, bark, telegram).
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ async def _async_cleanup() -> None:
 
 
 def _run_daily_push() -> None:
-    """Synchronous wrapper for daily email push."""
+    """Synchronous wrapper for daily notification push."""
     try:
         loop = asyncio.new_event_loop()
         loop.run_until_complete(_async_daily_push())
@@ -60,14 +60,11 @@ def _run_daily_push() -> None:
 
 
 async def _async_daily_push() -> None:
+    """Generate summaries for all active boards and notify via configured channels."""
     from app.core.db import AsyncSessionLocal
     from app.services.db_service import db_service
-    from app.services.email_service import email_service
+    from app.services.notification import notify_service
     from app.services.source_adapters import get_adapter, UnknownSourceTypeError
-
-    if not email_service.is_configured:
-        logger.info("Email service not configured, skipping daily push task.")
-        return
 
     logger.info("Starting daily background summary generation and push (per-board).")
     search_date = datetime.now().strftime("%Y-%m-%d")
@@ -119,10 +116,16 @@ async def _async_daily_push() -> None:
                             enqueue_for_ingest(article_urls, fallback_contents=fb if fb else None)
 
             if summary:
+                # Determine per-board notification channels (or use global default)
+                board_channels = None
+                if hasattr(board, "notify_channels") and board.notify_channels:
+                    board_channels = [
+                        ch.strip() for ch in board.notify_channels.split(",") if ch.strip()
+                    ]
                 try:
-                    await email_service.send_daily_summary(summary)
+                    await notify_service.send(summary, channels=board_channels)
                 except Exception:
-                    logger.exception("Failed to email summary for board '%s'", board.slug)
+                    logger.exception("Failed to notify for board '%s'", board.slug)
             else:
                 logger.warning("No summary produced for board '%s'", board.slug)
 
@@ -151,7 +154,7 @@ def start_scheduler() -> None:
             _run_daily_push,
             trigger=CronTrigger(hour=hour, minute=minute),
             id="daily_push",
-            name="Daily Email Push",
+            name="Daily Notification Push",
             replace_existing=True,
         )
         logger.info(f"Scheduled daily push for {hour:02d}:{minute:02d}")
