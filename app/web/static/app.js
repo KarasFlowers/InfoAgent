@@ -123,7 +123,7 @@ function switchBoard(slug) {
     renderBoardTabs();
     
     // Close panels if open
-    document.getElementById('persona-panel').classList.remove('open');
+    document.getElementById('persona-panel').classList.remove('active');
     document.getElementById('insights-modal').style.display = 'none';
     
     fetchSummary();
@@ -456,6 +456,7 @@ async function fetchSummaryWithUrl(url) {
 
         renderHome();
         renderRecReport();
+        fetchSystemMetrics();
 
         loadingState.style.display = 'none';
         contentState.style.display = 'block';
@@ -714,10 +715,11 @@ function renderSourceStats(stats) {
         statsContainer.style.display = 'none';
         return;
     }
+    statsContainer.style.display = 'flex';
 
-    const label = document.createElement('div');
-    label.className = 'stats-label';
-    label.textContent = '来源分布 (今日生成)';
+    const label = document.createElement('h4');
+    label.className = 'metrics-card-title';
+    label.textContent = '来源分布 (今日)';
     statsContainer.appendChild(label);
 
     Object.keys(stats).sort().forEach((source) => {
@@ -766,10 +768,9 @@ function confirmForceRefresh() {
 
 function togglePersonaPanel() {
     const panel = document.getElementById('persona-panel');
-    panel.classList.toggle('open');
-    if (panel.classList.contains('open')) {
+    panel.classList.toggle('active');
+    if (panel.classList.contains('active')) {
         loadPersonaData();
-        fetchSystemMetrics();
         loadExplicitPreferences();
     }
 }
@@ -1964,3 +1965,424 @@ async function deletePrefTag(id) {
         console.error('Failed to delete preference', e);
     }
 }
+
+// ==========================================
+// Insights Panel (Heatmap + Entity Timeline)
+// ==========================================
+
+function toggleInsightsPanel() {
+    const modal = document.getElementById('insights-modal');
+    if (!modal) return;
+    modal.classList.toggle('active');
+    if (modal.classList.contains('active')) {
+        fetchHeatmap();
+    }
+}
+
+async function fetchHeatmap() {
+    const container = document.getElementById('heatmap-container');
+    if (!container) return;
+    const daysSelect = document.getElementById('heatmap-days');
+    const days = daysSelect ? daysSelect.value : 7;
+
+    container.innerHTML = '<p class="heatmap-placeholder">正在加载话题热度...</p>';
+
+    try {
+        const res = await fetch(`/api/v1/insights/heatmap?days=${days}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderHeatmap(data, container);
+    } catch (e) {
+        console.error('Failed to fetch heatmap', e);
+        container.innerHTML = `<p class="heatmap-placeholder">加载失败: ${e.message}</p>`;
+    }
+}
+
+function renderHeatmap(data, container) {
+    container.innerHTML = '';
+
+    const dates = data.dates || [];
+    const topics = data.topics || [];
+
+    if (dates.length === 0 || topics.length === 0) {
+        container.innerHTML = '<p class="heatmap-placeholder">暂无足够数据生成热度图</p>';
+        return;
+    }
+
+    // Topics are already sorted by total from backend; take top 20
+    const sortedTopics = topics.slice(0, 20);
+
+    // Find global max for color scaling
+    let maxCount = 0;
+    for (const t of sortedTopics) {
+        for (const c of t.counts) {
+            if (c > maxCount) maxCount = c;
+        }
+    }
+    if (maxCount === 0) maxCount = 1;
+
+    // Format short dates for header
+    const shortDates = dates.map(d => {
+        const parts = d.split('-');
+        return `${parts[1]}/${parts[2]}`;
+    });
+
+    // Build grid
+    const table = document.createElement('div');
+    table.className = 'heatmap-grid';
+    table.style.cssText = `display: grid; grid-template-columns: 160px repeat(${dates.length}, 1fr); gap: 3px; font-size: 0.78rem;`;
+
+    // Header row
+    const cornerCell = document.createElement('div');
+    cornerCell.className = 'heatmap-corner';
+    cornerCell.style.cssText = 'font-weight: 600; color: var(--text-secondary); padding: 6px 8px;';
+    cornerCell.textContent = '话题 / 日期';
+    table.appendChild(cornerCell);
+
+    for (const sd of shortDates) {
+        const headerCell = document.createElement('div');
+        headerCell.className = 'heatmap-date-header';
+        headerCell.style.cssText = 'text-align: center; font-weight: 600; color: var(--text-secondary); padding: 6px 4px;';
+        headerCell.textContent = sd;
+        table.appendChild(headerCell);
+    }
+
+    // Data rows
+    for (const topic of sortedTopics) {
+        const labelCell = document.createElement('div');
+        labelCell.className = 'heatmap-label';
+        labelCell.style.cssText = 'color: var(--text-primary); padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center;';
+        labelCell.textContent = topic.name;
+        labelCell.title = `${topic.name} (总计: ${topic.total})`;
+        table.appendChild(labelCell);
+
+        for (let i = 0; i < dates.length; i++) {
+            const count = topic.counts[i] || 0;
+            const intensity = count / maxCount;
+            const cell = document.createElement('div');
+            cell.className = 'heatmap-cell';
+
+            let bg, color;
+            if (count === 0) {
+                bg = 'rgba(255,255,255,0.03)';
+                color = 'transparent';
+            } else if (intensity < 0.33) {
+                bg = 'rgba(99, 102, 241, 0.15)';
+                color = 'rgba(165, 180, 252, 0.9)';
+            } else if (intensity < 0.66) {
+                bg = 'rgba(99, 102, 241, 0.35)';
+                color = '#fff';
+            } else {
+                bg = 'rgba(99, 102, 241, 0.7)';
+                color = '#fff';
+            }
+
+            cell.style.cssText = `background: ${bg}; color: ${color}; text-align: center; padding: 6px 4px; border-radius: 6px; font-weight: 600; font-size: 0.75rem; transition: all 0.2s; cursor: default;`;
+            cell.textContent = count > 0 ? count : '';
+            cell.title = `${topic.name} · ${dates[i]}: ${count} 条`;
+            table.appendChild(cell);
+        }
+    }
+
+    container.appendChild(table);
+}
+
+async function fetchEntityTimeline() {
+    const input = document.getElementById('entity-input');
+    const container = document.getElementById('timeline-container');
+    if (!input || !container) return;
+
+    const entity = input.value.trim();
+    if (!entity) return;
+
+    container.innerHTML = '<p class="timeline-placeholder">正在搜索...</p>';
+
+    try {
+        const res = await fetch(`/api/v1/insights/timeline?entity=${encodeURIComponent(entity)}&days=30`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderEntityTimeline(data, container);
+    } catch (e) {
+        console.error('Failed to fetch entity timeline', e);
+        container.innerHTML = `<p class="timeline-placeholder">搜索失败: ${e.message}</p>`;
+    }
+}
+
+function renderEntityTimeline(data, container) {
+    container.innerHTML = '';
+
+    if (!data.items || data.items.length === 0) {
+        container.innerHTML = `<p class="timeline-placeholder">在最近 ${data.days || 30} 天内未找到与 "${data.entity}" 相关的资讯</p>`;
+        return;
+    }
+
+    const header = document.createElement('div');
+    header.style.cssText = 'margin-bottom: 1.25rem; color: var(--text-secondary); font-size: 0.85rem;';
+    header.textContent = `找到 ${data.total} 条与 "${data.entity}" 相关的资讯（近 ${data.days} 天）`;
+    container.appendChild(header);
+
+    const timeline = document.createElement('div');
+    timeline.className = 'entity-timeline';
+    timeline.style.cssText = 'display: flex; flex-direction: column; gap: 0.75rem; position: relative; padding-left: 1.5rem; border-left: 2px solid rgba(99, 102, 241, 0.3);';
+
+    for (const item of data.items) {
+        const entry = document.createElement('div');
+        entry.className = 'timeline-entry';
+        entry.style.cssText = 'position: relative; padding: 1rem 1.25rem; background: var(--surface-color); border: 1px solid var(--border-color); border-radius: 12px; transition: all 0.3s ease; cursor: default;';
+
+        // Dot on the timeline line
+        const dot = document.createElement('div');
+        dot.style.cssText = 'position: absolute; left: -2rem; top: 1.25rem; width: 10px; height: 10px; background: var(--accent-color); border-radius: 50%; box-shadow: 0 0 8px rgba(99,102,241,0.5);';
+        entry.appendChild(dot);
+
+        const dateLine = document.createElement('div');
+        dateLine.style.cssText = 'font-size: 0.78rem; color: var(--accent-color); font-weight: 600; margin-bottom: 0.35rem;';
+        dateLine.textContent = item.date || '';
+        entry.appendChild(dateLine);
+
+        const headline = document.createElement('div');
+        headline.style.cssText = 'font-size: 0.95rem; color: var(--text-primary); font-weight: 600; margin-bottom: 0.3rem; line-height: 1.4;';
+        headline.textContent = item.headline || '未命名';
+        entry.appendChild(headline);
+
+        if (item.source) {
+            const source = document.createElement('div');
+            source.style.cssText = 'font-size: 0.78rem; color: var(--text-secondary);';
+            source.textContent = `来源: ${item.source}`;
+            entry.appendChild(source);
+        }
+
+        timeline.appendChild(entry);
+    }
+
+    container.appendChild(timeline);
+}
+
+// ==========================================
+// Sources Management Panel
+// ==========================================
+
+function toggleSourcesPanel() {
+    const modal = document.getElementById('sources-modal');
+    if (!modal) return;
+    modal.classList.toggle('active');
+    if (modal.classList.contains('active')) {
+        loadSourcesForCurrentBoard();
+    }
+}
+
+function _getCurrentBoardObj() {
+    if (!currentBoardSlug || !availableBoards.length) return null;
+    return availableBoards.find(b => b.slug === currentBoardSlug) || null;
+}
+
+async function loadSourcesForCurrentBoard() {
+    const listEl = document.getElementById('sources-feed-list');
+    const labelEl = document.getElementById('sources-board-label');
+    const board = _getCurrentBoardObj();
+
+    if (!board) {
+        labelEl.textContent = '当前板块: --';
+        listEl.innerHTML = '<p class="sources-placeholder">未选择板块</p>';
+        return;
+    }
+
+    labelEl.textContent = `${board.icon || ''} ${board.name} (${board.source_type})`.trim();
+
+    // For RSS and multi-source boards, extract feeds from source_config
+    const config = board.source_config || {};
+    let feeds = [];
+
+    if (board.source_type === 'rss') {
+        feeds = config.feeds || [];
+    } else if (board.source_type === 'multi') {
+        // Multi-source: extract RSS feeds if any
+        const sources = config.sources || {};
+        if (sources.rss && sources.rss.feeds) {
+            feeds = sources.rss.feeds;
+        }
+    }
+
+    if (feeds.length === 0) {
+        listEl.innerHTML = '<p class="sources-placeholder">此板块暂无配置 RSS 信息源</p>';
+        return;
+    }
+
+    renderFeedList(feeds, listEl);
+}
+
+function renderFeedList(feeds, container) {
+    container.innerHTML = '';
+    feeds.forEach((url, index) => {
+        const item = document.createElement('div');
+        item.className = 'source-feed-item';
+        item.id = `source-item-${index}`;
+
+        item.innerHTML = `
+            <span class="source-feed-index">${index + 1}</span>
+            <span class="source-feed-url">${url}</span>
+            <span class="source-feed-status" id="source-status-${index}"></span>
+            <div class="source-feed-actions">
+                <button class="source-feed-test-btn" onclick="testExistingFeed(${index}, '${url.replace(/'/g, "\\'")}')">测试</button>
+                <button class="source-feed-del-btn" onclick="deleteSourceFeed(${index})">删除</button>
+            </div>
+        `;
+        container.appendChild(item);
+    });
+}
+
+async function testSourceFeed() {
+    const input = document.getElementById('new-source-url');
+    const resultEl = document.getElementById('source-test-result');
+    const url = input.value.trim();
+
+    if (!url) return;
+
+    resultEl.style.display = 'block';
+    resultEl.className = 'source-test-result';
+    resultEl.innerHTML = '<span style="animation: pulseText 1.5s infinite;">正在测试连接...</span>';
+
+    try {
+        const res = await fetch('/api/v1/sources/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url}),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+            resultEl.className = 'source-test-result test-ok';
+            const samples = data.sample_titles.map(t => `<li>${t}</li>`).join('');
+            resultEl.innerHTML = `
+                <strong>✓ 连接成功</strong> — ${data.feed_title}<br>
+                <span style="opacity:0.8;">共 ${data.article_count} 篇文章</span>
+                ${samples ? `<ul style="margin: 0.5rem 0 0 1rem; opacity: 0.8; font-size: 0.8rem;">${samples}</ul>` : ''}
+            `;
+        } else {
+            resultEl.className = 'source-test-result test-fail';
+            resultEl.innerHTML = `<strong>✗ 连接失败</strong> — ${data.error}`;
+        }
+    } catch (e) {
+        resultEl.className = 'source-test-result test-fail';
+        resultEl.innerHTML = `<strong>✗ 请求异常</strong> — ${e.message}`;
+    }
+}
+
+async function testExistingFeed(index, url) {
+    const statusEl = document.getElementById(`source-status-${index}`);
+    if (!statusEl) return;
+
+    statusEl.className = 'source-feed-status status-testing';
+    statusEl.textContent = '测试中…';
+
+    try {
+        const res = await fetch('/api/v1/sources/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url}),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+            statusEl.className = 'source-feed-status status-ok';
+            statusEl.textContent = `✓ ${data.article_count}篇`;
+            statusEl.title = data.feed_title;
+        } else {
+            statusEl.className = 'source-feed-status status-fail';
+            statusEl.textContent = '✗ 失败';
+            statusEl.title = data.error;
+        }
+    } catch (e) {
+        statusEl.className = 'source-feed-status status-fail';
+        statusEl.textContent = '✗ 异常';
+        statusEl.title = e.message;
+    }
+}
+
+async function _updateBoardFeeds(newFeeds) {
+    const board = _getCurrentBoardObj();
+    if (!board) return;
+
+    let newConfig;
+    if (board.source_type === 'rss') {
+        newConfig = {...(board.source_config || {}), feeds: newFeeds};
+    } else if (board.source_type === 'multi') {
+        const oldConfig = board.source_config || {};
+        const sources = oldConfig.sources || {};
+        sources.rss = {...(sources.rss || {}), feeds: newFeeds};
+        newConfig = {...oldConfig, sources};
+    } else {
+        return;
+    }
+
+    const res = await fetch(`/api/v1/boards/${encodeURIComponent(board.slug)}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({source_config: newConfig}),
+    });
+
+    if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(detail);
+    }
+
+    // Update the local board object so UI stays in sync
+    const updated = await res.json();
+    board.source_config = updated.source_config;
+    // Also update the availableBoards array
+    const idx = availableBoards.findIndex(b => b.slug === board.slug);
+    if (idx !== -1) availableBoards[idx] = {...availableBoards[idx], source_config: updated.source_config};
+}
+
+function _getCurrentFeeds() {
+    const board = _getCurrentBoardObj();
+    if (!board) return [];
+    const config = board.source_config || {};
+    if (board.source_type === 'rss') return [...(config.feeds || [])];
+    if (board.source_type === 'multi') {
+        const sources = config.sources || {};
+        return [...(sources.rss?.feeds || [])];
+    }
+    return [];
+}
+
+async function addSourceFeed() {
+    const input = document.getElementById('new-source-url');
+    const url = input.value.trim();
+    if (!url) return;
+
+    const feeds = _getCurrentFeeds();
+    if (feeds.includes(url)) {
+        alert('此信息源已存在');
+        return;
+    }
+
+    feeds.push(url);
+
+    try {
+        await _updateBoardFeeds(feeds);
+        input.value = '';
+        document.getElementById('source-test-result').style.display = 'none';
+        loadSourcesForCurrentBoard();
+    } catch (e) {
+        alert('添加失败: ' + e.message);
+    }
+}
+
+async function deleteSourceFeed(index) {
+    const feeds = _getCurrentFeeds();
+    if (index < 0 || index >= feeds.length) return;
+
+    const removed = feeds[index];
+    if (!confirm(`确认删除此信息源？\n${removed}`)) return;
+
+    feeds.splice(index, 1);
+
+    try {
+        await _updateBoardFeeds(feeds);
+        loadSourcesForCurrentBoard();
+    } catch (e) {
+        alert('删除失败: ' + e.message);
+    }
+}
+
