@@ -95,12 +95,14 @@ async def get_topic_heatmap(session: AsyncSession, days: int = 7) -> dict:
         if item.category:
             buckets[item.category][idx] += 1
 
-        # ...and every tag (stored as JSON string)
-        try:
-            tags = json.loads(item.tags) if item.tags else []
-        except json.JSONDecodeError:
-            tags = []
-        for tag in tags:
+        # ...and every tag (native JSON column → already a Python list)
+        raw_tags = item.tags or []
+        if isinstance(raw_tags, str):
+            try:
+                raw_tags = json.loads(raw_tags)
+            except (json.JSONDecodeError, TypeError):
+                raw_tags = []
+        for tag in (raw_tags if isinstance(raw_tags, list) else []):
             if not isinstance(tag, str):
                 continue
             clean = tag.lstrip("#").strip()
@@ -156,12 +158,14 @@ async def get_entity_timeline(
     for date, item in rows:
         haystack = (item.headline or "").lower()
         if needle not in haystack:
-            # fall back to searching key_points
-            try:
-                kp = json.loads(item.key_points) if item.key_points else []
-            except json.JSONDecodeError:
-                kp = []
-            joined = " ".join(kp).lower() if isinstance(kp, list) else str(kp).lower()
+            # fall back to searching key_points (native JSON column → already a list)
+            raw_kp = item.key_points or []
+            if isinstance(raw_kp, str):
+                try:
+                    raw_kp = json.loads(raw_kp)
+                except (json.JSONDecodeError, TypeError):
+                    raw_kp = []
+            joined = " ".join(raw_kp).lower() if isinstance(raw_kp, list) else str(raw_kp).lower()
             if needle not in joined:
                 continue
 
