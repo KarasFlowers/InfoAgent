@@ -1,6 +1,7 @@
 import json
 import time
 import logging
+from collections import defaultdict
 from datetime import datetime
 import statistics
 
@@ -9,7 +10,20 @@ from app.services.redis_service import redis_service
 logger = logging.getLogger(__name__)
 
 class MetricsService:
-    """Service to track and report daily LLM usage metrics."""
+    """Service to track and report daily LLM usage metrics.
+    
+    Uses Redis when available; falls back to an in-memory dict so that
+    metrics still work (within the current process lifetime) even when
+    Redis is not running.
+    """
+    
+    def __init__(self):
+        # In-memory fallback: {date_str: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}}
+        self._mem_tokens: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
+        # In-memory fallback: {date_str: [float]}
+        self._mem_latencies: dict[str, list[float]] = defaultdict(list)
     
     @property
     def today_str(self) -> str:
@@ -20,11 +34,18 @@ class MetricsService:
 
     async def record_tokens(self, prompt: int, completion: int) -> None:
         """Increment the daily token count."""
+        date_str = self.today_str
+
+        # Always record in-memory (zero cost)
+        self._mem_tokens[date_str]["prompt_tokens"] += prompt
+        self._mem_tokens[date_str]["completion_tokens"] += completion
+        self._mem_tokens[date_str]["total_tokens"] += prompt + completion
+
         client = await self._get_client()
         if not client:
             return
             
-        key = f"metrics:tokens:{self.today_str}"
+        key = f"metrics:tokens:{date_str}"
         try:
             # We use a pipeline for atomic increments
             async with client.pipeline(transaction=True) as pipe:
@@ -38,11 +59,16 @@ class MetricsService:
 
     async def record_latency(self, duration_sec: float) -> None:
         """Record a summary generation latency (in seconds) to a daily list."""
+        date_str = self.today_str
+
+        # Always record in-memory
+        self._mem_latencies[date_str].append(duration_sec)
+
         client = await self._get_client()
         if not client:
             return
             
-        key = f"metrics:latency:summary:{self.today_str}"
+        key = f"metrics:latency:summary:{date_str}"
         try:
             async with client.pipeline(transaction=True) as pipe:
                 pipe.rpush(key, str(duration_sec))
@@ -58,7 +84,7 @@ class MetricsService:
             
         client = await self._get_client()
         if not client:
-            return {"error": "Redis not connected"}
+            return self._get_memory_metrics(date_str)
             
         token_key = f"metrics:tokens:{date_str}"
         latency_key = f"metrics:latency:summary:{date_str}"
@@ -87,6 +113,28 @@ class MetricsService:
             }
         except Exception as e:
             logger.warning("Failed to fetch metrics from Redis: %s", e)
-            return {"error": "Failed to fetch metrics"}
+            return self._get_memory_metrics(date_str)
+
+    def _get_memory_metrics(self, date_str: str) -> dict:
+        """Return metrics from in-memory fallback."""
+        mem = self._mem_tokens.get(date_str, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        latencies = self._mem_latencies.get(date_str, [])
+
+        p50 = statistics.median(latencies) if latencies else 0.0
+        p99 = statistics.quantiles(latencies, n=100)[-1] if len(latencies) >= 2 else (latencies[0] if latencies else 0.0)
+
+        return {
+            "date": date_str,
+            "tokens": {
+                "prompt": mem["prompt_tokens"],
+                "completion": mem["completion_tokens"],
+                "total": mem["total_tokens"],
+            },
+            "latency": {
+                "count": len(latencies),
+                "p50_sec": round(p50, 2),
+                "p99_sec": round(p99, 2),
+            },
+        }
 
 metrics_service = MetricsService()
