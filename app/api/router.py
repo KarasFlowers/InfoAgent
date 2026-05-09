@@ -166,6 +166,47 @@ async def manually_trigger_rss_fetch():
     return await fetch_all_feeds(settings.RSS_FEEDS)
 
 
+class TestFeedRequest(BaseModel):
+    url: str = Field(min_length=5, max_length=2048)
+
+
+@api_router.post("/sources/test")
+async def test_source_feed(payload: TestFeedRequest):
+    """
+    Test a single RSS feed URL. Returns status, article count, and sample titles.
+    Does NOT cache the result.
+    """
+    import httpx
+    import feedparser
+
+    url = payload.url.strip()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    try:
+        async with httpx.AsyncClient(headers=headers) as client:
+            resp = await client.get(url, timeout=15.0, follow_redirects=True)
+            resp.raise_for_status()
+
+        feed = feedparser.parse(resp.text)
+        entries = feed.entries or []
+        feed_title = feed.feed.get("title", "Unknown Feed")
+
+        return {
+            "ok": True,
+            "feed_title": feed_title,
+            "article_count": len(entries),
+            "sample_titles": [e.get("title", "Untitled") for e in entries[:5]],
+        }
+    except httpx.HTTPStatusError as e:
+        return {"ok": False, "error": f"HTTP {e.response.status_code}"}
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "请求超时 (15s)"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 async def _resolve_board(session: AsyncSession, slug: str | None):
     """
     Resolve an optional board slug to a Board row. When slug is None,
