@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     await init_db()
 
     # Start APScheduler (handles periodic cleanup + future jobs)
-    start_scheduler()
+    await start_scheduler()
 
     # Start background ingest workers
     worker_tasks: list[asyncio.Task] = []

@@ -1,12 +1,17 @@
 """
 APScheduler-based background jobs.
 
-Currently registered jobs
--------------------------
-- **cleanup_old_data** – runs every 6 hours (and once on startup) to prune
-  expired summaries, news items, and RAG collections.
-- **daily_push** - runs daily at configured time (default 08:00) to auto-generate
-  the briefing and notify via all configured channels (email, webhook, bark, telegram).
+Registered jobs
+---------------
+- **cleanup_old_data** – every 6 hours (+ once on startup): prune expired data.
+- **daily_push** – global fallback cron for boards *without* a custom schedule.
+- **board_push:<slug>** – per-board cron for boards that define their own schedule.
+
+Per-board scheduling
+--------------------
+If ``Board.schedule`` is set (e.g. ``"08:00"``, ``"08:30,18:00"``), the board gets
+its own dedicated cron job(s) and is excluded from the global daily_push.
+Multiple times can be comma-separated to push the same board at different hours.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
+from typing import List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -25,6 +31,26 @@ logger = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_hhmm(time_str: str) -> Optional[tuple[int, int]]:
+    """Parse 'HH:MM' into (hour, minute) or return None on bad format."""
+    try:
+        parts = time_str.strip().split(":")
+        h, m = int(parts[0]), int(parts[1])
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return (h, m)
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Async work functions
+# ---------------------------------------------------------------------------
 
 def _run_cleanup() -> None:
     """Synchronous wrapper executed by APScheduler's thread-pool."""
@@ -48,35 +74,63 @@ async def _async_cleanup() -> None:
         logger.info("Scheduled cleanup removed %s old summaries", deleted)
 
 
+def _make_board_push_runner(board_slug: str):
+    """Factory: create a sync runner scoped to a single board slug."""
+    def _run() -> None:
+        try:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_async_push_boards(slugs=[board_slug]))
+        except Exception:
+            logger.exception("Scheduled push failed for board '%s'", board_slug)
+        finally:
+            loop.close()
+    return _run
+
+
 def _run_daily_push() -> None:
-    """Synchronous wrapper for daily notification push."""
+    """Synchronous wrapper — pushes boards that have NO custom schedule."""
     try:
         loop = asyncio.new_event_loop()
-        loop.run_until_complete(_async_daily_push())
+        loop.run_until_complete(_async_push_boards(only_global=True))
     except Exception:
         logger.exception("Scheduled daily push failed")
     finally:
         loop.close()
 
 
-async def _async_daily_push() -> None:
-    """Generate summaries for all active boards and notify via configured channels."""
+async def _async_push_boards(
+    slugs: Optional[List[str]] = None,
+    only_global: bool = False,
+) -> None:
+    """
+    Generate summaries and notify for selected boards.
+
+    Args:
+        slugs: If provided, process only these board slugs.
+        only_global: If True, process only boards that have NO custom schedule
+                     (i.e. boards that rely on the global DAILY_PUSH_TIME).
+    """
     from app.core.db import AsyncSessionLocal
     from app.services.db_service import db_service
     from app.services.notification import notify_service
     from app.services.source_adapters import get_adapter, UnknownSourceTypeError
 
-    logger.info("Starting daily background summary generation and push (per-board).")
     search_date = datetime.now().strftime("%Y-%m-%d")
 
     async with AsyncSessionLocal() as session:
         boards = await db_service.list_boards(session, active_only=True)
         if not boards:
-            logger.warning("No active boards found; skipping daily push.")
+            logger.warning("No active boards found; skipping push.")
             return
 
+        # Filter boards
+        if slugs:
+            boards = [b for b in boards if b.slug in slugs]
+        elif only_global:
+            boards = [b for b in boards if not b.schedule or not b.schedule.strip()]
+
         for board in boards:
-            logger.info("Daily push: processing board '%s'", board.slug)
+            logger.info("Push: processing board '%s'", board.slug)
             existing = await db_service.get_summary_by_date(
                 session, search_date, board_id=board.id
             )
@@ -118,7 +172,7 @@ async def _async_daily_push() -> None:
             if summary:
                 # Determine per-board notification channels (or use global default)
                 board_channels = None
-                if hasattr(board, "notify_channels") and board.notify_channels:
+                if board.notify_channels:
                     board_channels = [
                         ch.strip() for ch in board.notify_channels.split(",") if ch.strip()
                     ]
@@ -130,13 +184,68 @@ async def _async_daily_push() -> None:
                 logger.warning("No summary produced for board '%s'", board.slug)
 
 
-def start_scheduler() -> None:
+# ---------------------------------------------------------------------------
+# Scheduler lifecycle
+# ---------------------------------------------------------------------------
+
+async def _register_board_schedules() -> None:
+    """
+    Read active boards from DB and register per-board cron jobs for those
+    that have a custom schedule. Must be called after DB is ready.
+
+    This is now an async function so it can be awaited from an already-running
+    event loop (e.g. FastAPI lifespan) without creating a nested loop.
+    """
+    await _async_register_board_schedules()
+
+
+async def _async_register_board_schedules() -> None:
+    from app.core.db import AsyncSessionLocal
+    from app.services.db_service import db_service
+
+    async with AsyncSessionLocal() as session:
+        boards = await db_service.list_boards(session, active_only=True)
+
+    for board in boards:
+        if not board.schedule or not board.schedule.strip():
+            continue
+
+        # Support comma-separated multiple times: "08:00,18:00"
+        times = [t.strip() for t in board.schedule.split(",") if t.strip()]
+        for idx, time_str in enumerate(times):
+            parsed = _parse_hhmm(time_str)
+            if not parsed:
+                logger.error(
+                    "Board '%s' has invalid schedule time '%s', skipping.",
+                    board.slug, time_str,
+                )
+                continue
+
+            hour, minute = parsed
+            job_id = f"board_push:{board.slug}:{idx}"
+            _scheduler.add_job(
+                _make_board_push_runner(board.slug),
+                trigger=CronTrigger(hour=hour, minute=minute),
+                id=job_id,
+                name=f"Push [{board.slug}] at {hour:02d}:{minute:02d}",
+                replace_existing=True,
+            )
+            logger.info(
+                "Registered per-board push: '%s' at %02d:%02d", board.slug, hour, minute
+            )
+
+
+async def start_scheduler() -> None:
+    """Initialise APScheduler, register global jobs, then per-board schedules.
+
+    Must be awaited from an async context (e.g. FastAPI lifespan).
+    """
     global _scheduler
     if _scheduler is not None:
         return
 
     _scheduler = BackgroundScheduler(daemon=True)
-    
+
     # 1. Cleanup Job
     _scheduler.add_job(
         _run_cleanup,
@@ -146,20 +255,23 @@ def start_scheduler() -> None:
         replace_existing=True,
         next_run_time=None,  # skip immediate run; we'll fire once below
     )
-    
-    # 2. Daily Push Job
+
+    # 2. Global Daily Push (fallback for boards without custom schedule)
     try:
         hour, minute = map(int, settings.DAILY_PUSH_TIME.split(":"))
         _scheduler.add_job(
             _run_daily_push,
             trigger=CronTrigger(hour=hour, minute=minute),
             id="daily_push",
-            name="Daily Notification Push",
+            name="Daily Notification Push (global)",
             replace_existing=True,
         )
-        logger.info(f"Scheduled daily push for {hour:02d}:{minute:02d}")
+        logger.info("Scheduled global daily push for %02d:%02d", hour, minute)
     except ValueError:
-        logger.error(f"Invalid DAILY_PUSH_TIME format: {settings.DAILY_PUSH_TIME}. Expected HH:MM.")
+        logger.error("Invalid DAILY_PUSH_TIME format: %s. Expected HH:MM.", settings.DAILY_PUSH_TIME)
+
+    # 3. Per-board schedules (async — reads from DB)
+    await _register_board_schedules()
 
     _scheduler.start()
     logger.info("APScheduler started")
