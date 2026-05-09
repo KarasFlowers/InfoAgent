@@ -8,10 +8,13 @@ logger = logging.getLogger(__name__)
 class ScoringMixin:
     """Mixin providing ``_score_articles`` for LLMService."""
 
-    async def _score_articles(self, articles: list[dict]) -> tuple[list[dict], dict]:
+    async def _score_articles(self, articles: list[dict], interest_context: str = "") -> tuple[list[dict], dict]:
         """
         Pre-filter: ask the LLM to score each article's value (1-10).
         Returns (high_quality_articles, stats_metadata).
+
+        If ``interest_context`` is provided, it's appended to the scoring prompt
+        so user interests influence the scores.
         """
         quality_threshold = 5
 
@@ -28,6 +31,9 @@ Example:
   \"scores\": [{\"index\": 0, \"score\": 8}, {\"index\": 1, \"score\": 3}]
 }
 Do NOT include any other text."""
+
+        if interest_context:
+            scoring_prompt += interest_context
 
         input_for_scoring = json.dumps(
             [{"index": i, "title": a["title"], "summary": a["summary"][:150]} for i, a in enumerate(articles)],

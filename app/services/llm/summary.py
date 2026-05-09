@@ -170,6 +170,26 @@ class SummaryMixin:
                 persona_context = "\n\nUSER PERSONALITY & PREFERENCE GUIDELINES:\n"
             persona_context += f"- [Today Only] {one_time_preference}\n"
 
+        # ---- Interest-based pre-filter ----
+        from app.services.interest_filter import build_interest_filter
+
+        interest_filter = None
+        if session:
+            try:
+                personas = await db_service.get_active_personas(session, board_id=board_id)
+                if personas:
+                    interest_filter = build_interest_filter(personas)
+            except Exception as err:
+                logger.warning("Failed to build interest filter: %s", err)
+
+        if interest_filter and interest_filter.has_interests:
+            before_filter = len(content_items)
+            content_items = interest_filter.filter_items(content_items)
+            logger.info(
+                "Interest pre-filter: %d -> %d items",
+                before_filter, len(content_items),
+            )
+
         # ---- URL cross-source dedup + AI semantic dedup ----
         from app.services.dedup_service import (
             merge_cross_source_duplicates,
@@ -227,7 +247,10 @@ class SummaryMixin:
             return None, content_fallback
 
         logger.info("Starting quality scoring for %s articles...", len(limited_articles))
-        high_quality, rec_report = await self._score_articles(limited_articles)
+        scoring_context = ""
+        if interest_filter:
+            scoring_context = interest_filter.build_scoring_context()
+        high_quality, rec_report = await self._score_articles(limited_articles, interest_context=scoring_context)
         logger.info("Proceeding with %s high-quality articles for summarization.", len(high_quality))
 
         # ---- AI semantic dedup on scored articles ----
