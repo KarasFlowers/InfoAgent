@@ -11,8 +11,10 @@
 - [系统架构](#系统架构)
 - [技术栈详解](#技术栈详解)
 - [核心模块设计](#核心模块设计)
+- [Board 源类型](#board-源类型)
 - [数据模型](#数据模型)
 - [API 接口设计](#api-接口设计)
+- [MCP Server 集成](#mcp-server-集成)
 - [前端界面](#前端界面)
 - [项目亮点](#项目亮点)
 - [部署指南](#部署指南)
@@ -46,12 +48,32 @@ Argos 是一个**每日科技简报智能聚合系统**，核心价值在于：
 
 ## 核心功能
 
-### 1. 每日智能简报
+### 1. 多源内容聚合
 
-系统每天自动从 10+ 科技媒体源抓取最新资讯，通过 DeepSeek LLM 生成结构化的每日简报：
+Argos 支持多种内容源类型：
+
+- **RSS 源**：从任意 RSS/Atom feed 抓取内容
+- **Hacker News**：获取热门故事和评论
+- **Reddit**：抓取指定 subreddit 或用户的帖子
+- **GitHub**：跟踪用户动态和仓库发布
+- **多源组合**：并行组合多种源类型
+- **纯 LLM 生成**：让 LLM 生成原创内容
+
+### 2. Board 系统
+
+每个 Board 是一个独立的内容板块，拥有：
+
+- 独立的源类型和配置
+- 自定义 System Prompt
+- 个性化 Persona 设置
+- Board 创建向导（AI 引导）
+
+### 3. 每日智能简报
+
+系统每天自动生成结构化的每日简报：
 
 - **概览摘要**：2-3 句话概括当日最重要的技术趋势
-- **精选新闻**：10-15 条高质量资讯，每条包含：
+- **精选新闻**：8-12 条高质量资讯，每条包含：
   - 独立标题
   - 内容分类（AI、硬件、软件、安全等）
   - 3-5 个关键要点
@@ -59,7 +81,7 @@ Argos 是一个**每日科技简报智能聚合系统**，核心价值在于：
   - 原文链接和来源
 - **来源统计**：可视化展示各信息源的贡献度
 
-### 2. 文章深度追问
+### 4. 文章深度追问
 
 针对每篇新闻，用户可以点击「深度追问」进入 RAG 对话模式：
 
@@ -68,7 +90,16 @@ Argos 是一个**每日科技简报智能聚合系统**，核心价值在于：
 - 支持多轮对话，深入探讨文章细节
 - 流式输出，实时展示 AI 思考过程
 
-### 3. 个性化推荐系统
+### 4. 文章深度追问
+
+针对每篇新闻，用户可以点击「深度追问」进入 RAG 对话模式：
+
+- 系统自动抓取并解析原文内容
+- 基于向量检索实现精准的上下文定位
+- 支持多轮对话，深入探讨文章细节
+- 流式输出，实时展示 AI 思考过程
+
+### 5. 个性化推荐系统
 
 通过多维度反馈机制构建用户画像：
 
@@ -77,18 +108,20 @@ Argos 是一个**每日科技简报智能聚合系统**，核心价值在于：
 - **语义画像**：基于反馈历史计算用户兴趣向量
 - **智能重排**：结合多种信号动态调整内容排序
 
-### 4. 历史归档与洞察
+### 6. 历史归档与洞察
 
 - **历史简报**：浏览过去 7 天的简报归档
 - **周报生成**：Wired 风格的深度周刊，复盘一周技术版图
 - **话题热力图**：可视化展示近 30 天的话题热度变化
 - **实体时间线**：追踪特定公司/技术的历史动态
 
-### 5. 多渠道订阅
+### 7. 多渠道通知
 
 - **Web 界面**：现代化的深色主题仪表盘
-- **RSS 订阅**：标准 RSS 2.0 格式，支持任意阅读器
 - **邮件推送**：每日定时推送简报到邮箱
+- **Webhook**：推送到自定义 HTTP 端点
+- **Bark**：iOS 推送通知
+- **Telegram**：推送到 Telegram 群组或频道
 
 ---
 
@@ -445,6 +478,33 @@ _scheduler.add_job(
 
 ---
 
+## Board 源类型
+
+每个 Board 可以配置不同的源类型：
+
+| 源类型 | 描述 | 配置示例 |
+|--------|------|----------|
+| `rss` | 从 RSS feeds 抓取 | `{"feeds": ["https://hnrss.org/frontpage"]}` |
+| `hackernews` | HN 热门故事 + 评论 | `{"fetch_top_stories": 30, "min_score": 100}` |
+| `reddit` | Reddit 帖子 | `{"subreddits": [{"subreddit": "LocalLLaMA"}]}` |
+| `github` | GitHub 用户动态和仓库发布 | `{"users": ["openai"], "repos": [{"owner": "openai", "repo": "whisper"}]}` |
+| `multi` | 并行组合多种源 | `{"sources": {"rss": {...}, "hackernews": {...}}}` |
+| `pure_llm` | LLM 生成原创内容 | `{"items_per_day": 5, "style": "fun facts"}` |
+
+**源适配器架构**：
+
+```
+app/services/source_adapters/
+├── base.py           # BaseAdapter 抽象基类
+├── rss_adapter.py    # RSS 源适配器
+├── hn_adapter.py     # Hacker News 适配器
+├── reddit_adapter.py # Reddit 适配器
+├── github_adapter.py # GitHub 适配器
+└── pure_llm_adapter.py # 纯 LLM 适配器
+```
+
+---
+
 ## 数据模型
 
 ### ER 图
@@ -540,6 +600,9 @@ _scheduler.add_job(
 | POST | `/api/v1/rag/feedback` | 提交反馈 |
 | GET | `/api/v1/insights/heatmap` | 话题热力图 |
 | GET | `/api/v1/insights/timeline` | 实体时间线 |
+| GET | `/api/v1/boards` | 列出所有 Board |
+| POST | `/api/v1/boards` | 创建新 Board |
+| POST | `/api/v1/boards/wizard` | Board 创建向导 |
 
 ### 详细接口说明
 
@@ -601,6 +664,42 @@ data: 核心技术包括以下几点：
 data: 1. **Transformer 架构** [1]
 data: 2. **注意力机制** [2]
 data: [DONE]
+```
+
+---
+
+## MCP Server 集成
+
+Argos 支持 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)，可以将系统能力暴露给 AI 助手（如 Claude、Cursor、Windsurf）。
+
+### 可用工具
+
+| 工具 | 描述 |
+|------|------|
+| `get_daily_summary` | 获取指定 Board 的今日简报 |
+| `generate_summary` | 触发简报生成 |
+| `ask_article` | 对已摄入文章进行 RAG 问答 |
+| `search_news` | 跨新闻历史的关键词搜索 |
+| `list_boards` | 列出所有内容 Board |
+| `add_feedback` | 点赞/点踩文章以个性化 |
+| `get_user_interests` | 查看当前用户偏好 |
+| `get_system_status` | 系统健康和配置信息 |
+
+### 使用方式
+
+```bash
+# stdio 传输（用于 IDE 集成）
+python mcp_server.py
+
+# 或添加到 MCP 客户端配置
+{
+  "mcpServers": {
+    "argos": {
+      "command": "python",
+      "args": ["path/to/Argos/mcp_server.py"]
+    }
+  }
+}
 ```
 
 ---
@@ -702,7 +801,15 @@ data: [DONE]
 
 ## 项目亮点
 
-### 1. 完整的 RAG 管道
+### 1. 多源聚合与 Board 系统
+
+支持 RSS、Hacker News、Reddit、GitHub 等多种源类型，每个 Board 独立配置：
+
+- **灵活的源适配器架构**：易于扩展新的源类型
+- **Board 创建向导**：AI 引导式配置
+- **多源并行组合**：一个 Board 可聚合多种源
+
+### 2. 完整的 RAG 管道
 
 从网页抓取到流式问答，实现了完整的检索增强生成流程：
 
@@ -712,7 +819,7 @@ data: [DONE]
 - **查询增强**：HyDE 假设性回答改写
 - **流式输出**：SSE 实时展示 AI 思考过程
 
-### 2. 多维度个性化推荐
+### 3. 多维度个性化推荐
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -795,6 +902,23 @@ async def ensure_public_url_target(url: str) -> str:
 - 后台 Worker 处理文章向量化
 - SSE 流式响应，避免长时间阻塞
 
+### 7. MCP Server 集成
+
+通过 Model Context Protocol 暴露系统能力给 AI 助手：
+
+- 支持 Claude、Cursor、Windsurf 等 MCP 客户端
+- 提供简报查询、RAG 问答、偏好管理等工具
+- 便于构建 AI Agent 工作流
+
+### 8. 多渠道通知推送
+
+支持多种推送方式：
+
+- **邮件**：SMTP 发送 HTML 简报
+- **Webhook**：推送到自定义 HTTP 端点
+- **Bark**：iOS 推送通知
+- **Telegram**：推送到群组或频道
+
 ---
 
 ## 部署指南
@@ -802,11 +926,13 @@ async def ensure_public_url_target(url: str) -> str:
 ### Docker 部署（推荐）
 
 ```bash
-# 1. 复制配置文件
-cp .env.template .env
+# 1. 克隆仓库
+git clone https://github.com/KarasFlowers/Argos.git
+cd Argos
 
-# 2. 编辑配置
-vim .env  # 填入 DEEPSEEK_API_KEY
+# 2. 配置环境
+cp .env.template .env
+# 编辑 .env 设置 LLM_API_KEY
 
 # 3. 启动服务
 docker compose up -d
@@ -815,26 +941,66 @@ docker compose up -d
 open http://127.0.0.1:8000
 ```
 
-### 本地开发
+### 一键启动（本地开发推荐）
+
+项目提供启动脚本，自动处理虚拟环境、依赖安装、Redis 启动、模型下载：
 
 ```bash
-# 1. 创建虚拟环境
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# venv\Scripts\activate   # Windows
+# macOS / Linux
+chmod +x scripts/start.sh
+./scripts/start.sh
 
-# 2. 安装依赖
-pip install -r requirements.txt
-
-# 3. 启动 Redis（Windows）
-scripts\setup_redis.ps1
-
-# 4. 启动应用
-uvicorn main:app --reload
-
-# 或使用一键启动脚本（Windows）
+# Windows — 双击或运行：
 scripts\Open_Web_Dashboard.bat
 ```
+
+首次运行时会：
+1. 创建虚拟环境并安装依赖
+2. 提示输入 LLM API Key（自动创建 `.env`）
+3. 检查/启动 Redis
+4. 预下载 RAG 嵌入模型（约 650 MB，一次性）
+5. 启动后端并打开浏览器
+
+### 手动安装
+
+<details>
+<summary>点击展开详细步骤</summary>
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/KarasFlowers/Argos.git
+cd Argos
+
+# 2. 创建虚拟环境
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# Linux / macOS
+source venv/bin/activate
+
+# 3. 安装依赖
+pip install -r requirements.txt
+
+# 4. 配置环境
+cp .env.template .env
+# 编辑 .env 设置 LLM_API_KEY
+
+# 5. （可选）预下载 RAG 模型
+python scripts/download_models.py
+
+# 6. 启动 Redis
+# Windows: 启动脚本已处理
+# Linux/macOS: redis-server --daemonize yes
+
+# 7. 启动应用
+uvicorn main:app --reload
+
+# 8. 打开 http://127.0.0.1:8000
+```
+
+</details>
 
 ---
 
@@ -844,34 +1010,30 @@ scripts\Open_Web_Dashboard.bat
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|------|------|
-| DEEPSEEK_API_KEY | ✅ | - | DeepSeek API 密钥 |
-| DEEPSEEK_BASE_URL | | https://api.deepseek.com/v1 | API 端点 |
-| SQLALCHEMY_DATABASE_URI | | sqlite+aiosqlite:///./data/sqlite/argos.db | 数据库连接 |
-| REDIS_URL | | redis://localhost:6379 | Redis 连接 |
-| CHROMA_DB_DIR | | ./data/chroma | 向量数据库目录 |
-| HISTORY_DAYS_TO_KEEP | | 7 | 历史保留天数 |
-| RAG_HYDE_ENABLED | | true | 是否启用 HyDE |
-| SMTP_HOST | | - | 邮件服务器 |
-| SMTP_USER | | - | 邮箱账号 |
-| SMTP_PASSWORD | | - | 邮箱密码 |
-| EMAIL_SUBSCRIBERS | | [] | 订阅者列表 |
-| DAILY_PUSH_TIME | | 08:00 | 每日推送时间 |
-
-### RSS 源配置
-
-在 `app/core/config.py` 中配置：
-
-```python
-RSS_FEEDS: list[str] = [
-    "https://news.ycombinator.com/rss",
-    "https://feeds.arstechnica.com/arstechnica/index",
-    "https://huggingface.co/blog/feed.xml",
-    "https://openai.com/news/rss.xml",
-    "https://www.theverge.com/rss/index.xml",
-    "https://techcrunch.com/feed/",
-    # ... 更多源
-]
-```
+| `LLM_API_KEY` | ✅ | - | 任意 OpenAI 兼容 LLM 的 API Key |
+| `LLM_MODEL` | | `deepseek-chat` | 模型名称 |
+| `LLM_BASE_URL` | | `https://api.deepseek.com/v1` | API 端点 |
+| `LLM_TIMEOUT` | | `180` | 请求超时（秒） |
+| `DEEPSEEK_API_KEY` | | - | 旧版兼容，作为 LLM_API_KEY 的备选 |
+| `SQLALCHEMY_DATABASE_URI` | | `sqlite+aiosqlite:///./data/sqlite/argos.db` | 数据库连接 |
+| `REDIS_URL` | | `redis://localhost:6379` | Redis 连接 |
+| `CHROMA_DB_DIR` | | `./data/chroma` | 向量数据库目录 |
+| `CORS_ORIGINS` | | `http://localhost:5173,...` | 允许的前端源 |
+| `GITHUB_TOKEN` | | - | GitHub Token（提高速率限制） |
+| `HN_FETCH_TOP_STORIES` | | `30` | HN 热门故事数量 |
+| `HN_MIN_SCORE` | | `100` | HN 最低分数阈值 |
+| `REDDIT_FETCH_COMMENTS` | | `5` | Reddit 每帖评论数 |
+| `SMTP_HOST` | | - | SMTP 服务器 |
+| `SMTP_USER` | | - | SMTP 用户名 |
+| `SMTP_PASSWORD` | | - | SMTP 密码 |
+| `EMAIL_SUBSCRIBERS` | | `[]` | 订阅者邮箱列表 |
+| `DAILY_PUSH_TIME` | | `08:00` | 每日推送时间 |
+| `NOTIFY_CHANNELS` | | `email` | 通知渠道：`email,webhook,bark,telegram` |
+| `WEBHOOK_URL` | | - | Webhook 端点 |
+| `WEBHOOK_SECRET` | | - | Webhook 签名密钥 |
+| `BARK_URL` | | - | Bark iOS 推送 URL |
+| `TELEGRAM_BOT_TOKEN` | | - | Telegram Bot Token |
+| `TELEGRAM_CHAT_ID` | | - | Telegram Chat ID |
 
 ---
 
@@ -879,17 +1041,16 @@ RSS_FEEDS: list[str] = [
 
 ### 短期优化
 
-- [ ] 支持更多 LLM 后端（OpenAI、Claude、本地模型）
 - [ ] 增加单元测试和集成测试覆盖率
 - [ ] 优化前端性能（虚拟滚动、懒加载）
-- [ ] 支持自定义 RSS 源管理
+- [ ] 更多源适配器（Twitter/X、YouTube 等）
 
 ### 中期规划
 
 - [ ] 多用户系统与权限管理
 - [ ] 向量数据库迁移（Qdrant/Milvus）
 - [ ] 移动端适配或原生 App
-- [ ] 知识图谱构建
+- [ ] AI Agent 工作流深度集成
 
 ### 长期愿景
 
@@ -912,8 +1073,7 @@ MIT License
 
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [SQLModel](https://sqlmodel.tiangolo.com/)
-- [ChromaDB](https://{}
-www.trychroma.com/)
+- [ChromaDB](https://www.trychroma.com/)
 - [Sentence Transformers](https://www.sbert.net/)
 - [DeepSeek](https://www.deepseek.com/)
 - [trafilatura](https://trafilatura.readthedocs.io/)
