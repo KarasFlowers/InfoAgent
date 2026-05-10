@@ -85,7 +85,7 @@ async function initBoards() {
         if (availableBoards.length === 0) return;
 
         // Determine initial active board from localStorage or first default
-        const saved = localStorage.getItem('infoagent_board');
+        const saved = localStorage.getItem('argos_board');
         if (saved && availableBoards.find(b => b.slug === saved)) {
             currentBoardSlug = saved;
         } else {
@@ -119,7 +119,7 @@ function renderBoardTabs() {
 function switchBoard(slug) {
     if (slug === currentBoardSlug) return;
     currentBoardSlug = slug;
-    localStorage.setItem('infoagent_board', slug);
+    localStorage.setItem('argos_board', slug);
     renderBoardTabs();
     
     // Close panels if open
@@ -382,7 +382,7 @@ async function saveBoard(event) {
         closeBoardModal();
         if (!isEdit) {
             currentBoardSlug = slug; // Switch to new board
-            localStorage.setItem('infoagent_board', slug);
+            localStorage.setItem('argos_board', slug);
         }
         await initBoards();
         if (!isEdit) fetchSummary();
@@ -406,7 +406,7 @@ async function deleteBoard() {
         
         closeBoardModal();
         currentBoardSlug = null;
-        localStorage.removeItem('infoagent_board');
+        localStorage.removeItem('argos_board');
         await initBoards();
         fetchSummary();
     } catch (e) {

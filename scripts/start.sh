@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =========================================
-#   InfoAgent - One-Click Launcher
+#   Argos - One-Click Launcher
 #   Supports macOS and Linux
 # =========================================
 set -e
@@ -130,7 +130,7 @@ print('  Done.')
 fi
 
 # ---- 8) Start backend ----
-info "Starting InfoAgent backend on $URL ..."
+info "Starting Argos backend on $URL ..."
 "$UVICORN" main:app --host 127.0.0.1 --port "$PORT" --reload &
 SERVER_PID=$!
 

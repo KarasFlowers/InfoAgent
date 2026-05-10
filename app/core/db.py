@@ -103,7 +103,7 @@ async def _seed_default_board(conn) -> None:
         return
 
     default_prompt = (
-        "You are the Chief Editor of InfoAgent's '科技快讯' board. "
+        "You are the Chief Editor of Argos's '科技快讯' board. "
         "Curate today's most important technology, AI, programming, and "
         "industry news for a busy CS student."
     )

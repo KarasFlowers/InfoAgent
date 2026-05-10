@@ -70,13 +70,13 @@ async def get_rss_feed(session: AsyncSession = Depends(get_session)):
     
     # We'll use the domain of the first incoming request or just a generic placeholder 
     # since we don't have a configured base URL for the app itself in settings.
-    site_url = "https://infoagent.local"
+    site_url = "https://argos.local"
     
     xml = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<rss version="2.0">',
         '  <channel>',
-        '    <title>InfoAgent Daily Briefing</title>',
+        '    <title>Argos Daily Briefing</title>',
         f'    <link>{site_url}</link>',
         '    <description>Your personalized daily technology and AI briefing.</description>',
         '    <language>zh-cn</language>'
@@ -103,9 +103,9 @@ async def get_rss_feed(session: AsyncSession = Depends(get_session)):
         escaped_html = html_content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
         
         xml.append('    <item>')
-        xml.append(f'      <title>InfoAgent 日报 - {summary.date}</title>')
+        xml.append(f'      <title>Argos 日报 - {summary.date}</title>')
         xml.append(f'      <link>{site_url}/?date={summary.date}</link>')
-        xml.append(f'      <guid isPermaLink="false">infoagent-{summary.date}</guid>')
+        xml.append(f'      <guid isPermaLink="false">argos-{summary.date}</guid>')
         if pub_date:
             xml.append(f'      <pubDate>{pub_date}</pubDate>')
         xml.append(f'      <description>{escaped_html}</description>')

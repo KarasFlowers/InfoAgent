@@ -79,7 +79,7 @@ async def send_bark(summary: DailySummaryResponse) -> bool:
     if not settings.BARK_URL:
         return False
 
-    title = f"InfoAgent 日报 - {summary.date}"
+    title = f"Argos 日报 - {summary.date}"
     # Bark body: short overview + first 3 headlines
     headlines = [item.headline for item in summary.top_news[:3]]
     body = summary.overview + "\n\n" + "\n".join(f"• {h}" for h in headlines)
@@ -114,7 +114,7 @@ async def send_telegram(summary: DailySummaryResponse) -> bool:
         return False
 
     # Build markdown message
-    lines = [f"*InfoAgent 日报 — {summary.date}*\n"]
+    lines = [f"*Argos 日报 — {summary.date}*\n"]
     lines.append(f"_{summary.overview}_\n")
     for item in summary.top_news[:8]:
         link = item.original_link or ""

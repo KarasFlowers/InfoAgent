@@ -39,7 +39,7 @@ def _resolve_sqlite_uri(value: str) -> str:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
 
-    PROJECT_NAME: str = "InfoAgent"
+    PROJECT_NAME: str = "Argos"
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
     
@@ -77,7 +77,7 @@ class Settings(BaseSettings):
         return self.LLM_BASE_URL or self.DEEPSEEK_BASE_URL
     
     # Database
-    SQLALCHEMY_DATABASE_URI: str = "sqlite+aiosqlite:///./data/sqlite/infoagent.db"
+    SQLALCHEMY_DATABASE_URI: str = "sqlite+aiosqlite:///./data/sqlite/argos.db"
     
     # Retention Policy
     HISTORY_DAYS_TO_KEEP: int = 7
@@ -97,7 +97,7 @@ class Settings(BaseSettings):
 
     # Bark Push (iOS)
     BARK_URL: str | None = None               # e.g. https://api.day.app/YOUR_KEY
-    BARK_GROUP: str = "InfoAgent"
+    BARK_GROUP: str = "Argos"
 
     # Telegram Bot
     TELEGRAM_BOT_TOKEN: str | None = None

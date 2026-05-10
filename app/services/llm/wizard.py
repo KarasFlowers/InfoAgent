@@ -34,7 +34,7 @@ class WizardMixin:
         if not settings.effective_llm_api_key:
             return {"reply": "LLM API key 未配置。", "ready": False, "config": None}
 
-        system_prompt = """你是 InfoAgent 的「板块配置向导」，帮助用户配置一个新的内容板块。
+        system_prompt = """你是 Argos 的「板块配置向导」，帮助用户配置一个新的内容板块。
 
 你的目标：通过 1-3 轮对话，快速理解用户想要什么内容，并输出一份可直接使用的板块配置。
 

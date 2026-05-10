@@ -37,7 +37,7 @@ class GitHubScraper(BaseScraper):
     def _get_headers(self) -> dict:
         headers = {
             "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "InfoAgent-Scraper",
+            "User-Agent": "Argos-Scraper",
         }
         if self.token:
             headers["Authorization"] = f"token {self.token}"

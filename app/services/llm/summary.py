@@ -12,7 +12,7 @@ from app.services.db_service import db_service
 logger = logging.getLogger(__name__)
 
 EDITOR_PROMPT = """
-You are the Chief Editor of "InfoAgent", a highly intelligent AI assistant that curates a daily briefing of technology, AI, and interesting internet news for a busy computer science student.
+You are the Chief Editor of "Argos", a highly intelligent AI assistant that curates a daily briefing of technology, AI, and interesting internet news for a busy computer science student.
 
 I will provide you with a raw list of articles scraped from various RSS feeds today.
 Your goal is to read through all these articles and create a clean, highly readable, and structured daily summary.

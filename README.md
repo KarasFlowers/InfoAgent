@@ -1,4 +1,4 @@
-# InfoAgent
+# Argos
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -8,7 +8,7 @@
 
 > An intelligent daily tech briefing assistant powered by LLM and RAG.
 
-InfoAgent is a FastAPI-based daily tech briefing application that aggregates content from multiple sources (RSS, Hacker News, Reddit, GitHub, or pure LLM), uses any OpenAI-compatible LLM to curate structured summaries, and provides article-level RAG chat with feedback-driven personalization.
+Argos is a FastAPI-based daily tech briefing application that aggregates content from multiple sources (RSS, Hacker News, Reddit, GitHub, or pure LLM), uses any OpenAI-compatible LLM to curate structured summaries, and provides article-level RAG chat with feedback-driven personalization.
 
 ## Features
 
@@ -42,8 +42,8 @@ Coming soon...
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/KarasFlowers/InfoAgent.git
-cd InfoAgent
+git clone https://github.com/KarasFlowers/Argos.git
+cd Argos
 
 # 2. Configure environment
 cp .env.template .env
@@ -83,8 +83,8 @@ On first run the script will:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/KarasFlowers/InfoAgent.git
-cd InfoAgent
+git clone https://github.com/KarasFlowers/Argos.git
+cd Argos
 
 # 2. Create and activate a virtual environment
 python -m venv venv
@@ -131,7 +131,7 @@ Copy `.env.template` to `.env` and configure your settings. At minimum, you need
 | `LLM_TIMEOUT` | No | `180` | Request timeout in seconds |
 | `LLM_MAX_RETRIES` | No | `1` | Max retries on transient failures |
 | `DEEPSEEK_API_KEY` | No | - | Legacy alias — used as fallback when `LLM_API_KEY` is unset |
-| `SQLALCHEMY_DATABASE_URI` | No | `sqlite+aiosqlite:///./data/sqlite/infoagent.db` | Async SQLite database path |
+| `SQLALCHEMY_DATABASE_URI` | No | `sqlite+aiosqlite:///./data/sqlite/argos.db` | Async SQLite database path |
 | `CHROMA_DB_DIR` | No | `./data/chroma` | ChromaDB persistent storage path |
 | `CORS_ORIGINS` | No | `http://localhost:5173,...` | Comma-separated allowed frontend origins |
 | `GITHUB_TOKEN` | No | - | GitHub personal access token (increases rate limit to 5000 req/hr) |
@@ -165,7 +165,7 @@ Each board has a `source_type` that determines how content is fetched:
 
 ## MCP Server (AI Agent Integration)
 
-InfoAgent exposes its capabilities as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, allowing AI assistants like Claude, Cursor, and Windsurf to directly query your briefings, ask RAG questions, and manage preferences.
+Argos exposes its capabilities as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, allowing AI assistants like Claude, Cursor, and Windsurf to directly query your briefings, ask RAG questions, and manage preferences.
 
 ### Available Tools
 
@@ -189,9 +189,9 @@ python mcp_server.py
 # Or add to your MCP client config (e.g. claude_desktop_config.json):
 {
   "mcpServers": {
-    "infoagent": {
+    "argos": {
       "command": "python",
-      "args": ["path/to/InfoAgent/mcp_server.py"]
+      "args": ["path/to/Argos/mcp_server.py"]
     }
   }
 }
@@ -256,7 +256,7 @@ The service layer uses a **facade pattern** to keep imports backward-compatible 
 | `app/` | Main application package |
 | `app/web/static/` | Frontend static assets |
 | `app/web/templates/` | Jinja2 HTML templates |
-| `data/sqlite/infoagent.db` | SQLite database |
+| `data/sqlite/argos.db` | SQLite database |
 | `data/chroma/` | ChromaDB vector store |
 | `scripts/Open_Web_Dashboard.bat` | Windows one-click launcher |
 | `scripts/start.sh` | macOS / Linux one-click launcher |

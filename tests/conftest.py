@@ -1,5 +1,5 @@
 """
-conftest.py - Shared fixtures for InfoAgent tests.
+conftest.py - Shared fixtures for Argos tests.
 
 Provides:
   - An async FastAPI test client via httpx.AsyncClient

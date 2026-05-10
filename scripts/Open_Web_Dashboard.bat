@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 echo =========================================
-echo    InfoAgent - Web Dashboard Launcher    
+echo    Argos - Web Dashboard Launcher    
 echo =========================================
 echo.
 
@@ -37,8 +37,8 @@ if errorlevel 1 (
 )
 
 REM --- 4) Start backend in a visible window -----------------------------
-echo Starting InfoAgent backend...
-start "InfoAgent Backend" powershell.exe -NoExit -ExecutionPolicy Bypass -Command ^
+echo Starting Argos backend...
+start "Argos Backend" powershell.exe -NoExit -ExecutionPolicy Bypass -Command ^
     "& '%PROJECT_ROOT%\venv\Scripts\Activate.ps1'; Set-Location '%PROJECT_ROOT%'; uvicorn main:app --reload"
 
 REM --- 5) Poll /api/v1/ping until healthy (max ~30s) --------------------
@@ -65,7 +65,7 @@ start "" http://127.0.0.1:8000
 
 echo.
 echo Dashboard: http://127.0.0.1:8000
-echo Close the "InfoAgent Backend" window to stop the server.
+echo Close the "Argos Backend" window to stop the server.
 echo.
 pause
 endlocal

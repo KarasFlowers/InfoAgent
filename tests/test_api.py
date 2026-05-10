@@ -1,5 +1,5 @@
 """
-test_api.py - Integration tests for core InfoAgent API endpoints.
+test_api.py - Integration tests for core Argos API endpoints.
 
 Tests:
   - Health check (GET /api/v1/ping)

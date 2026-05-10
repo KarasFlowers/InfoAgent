@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
     logger.info("application_stopped")
 
 app = FastAPI(
-    title="InfoAgent API",
+    title="Argos API",
     description="Backend for the daily LLM information aggregation agent.",
     version="0.1.0",
     lifespan=lifespan

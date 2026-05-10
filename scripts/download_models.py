@@ -15,7 +15,7 @@ import time
 
 def main() -> int:
     print("=" * 50)
-    print("  InfoAgent — Model Pre-Download")
+    print("  Argos — Model Pre-Download")
     print("=" * 50)
     print()
 

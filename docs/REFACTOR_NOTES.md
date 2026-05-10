@@ -1,7 +1,7 @@
-# InfoAgent Refactor Notes
+# Argos Refactor Notes
 
 ## Summary
-Full-scope refactoring of the InfoAgent codebase covering 17 improvement items across architecture, robustness, documentation, and data model concerns.
+Full-scope refactoring of the Argos codebase covering 17 improvement items across architecture, robustness, documentation, and data model concerns.
 
 ## API Compatibility
 All public import names are preserved:

@@ -48,12 +48,12 @@ class EmailService:
         <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>InfoAgent 日报 - {summary.date}</title>
+            <title>Argos 日报 - {summary.date}</title>
         </head>
         <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f3f4f6; padding: 20px; margin: 0;">
             <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
                 <div style="background-color: #111827; color: #ffffff; padding: 24px; text-align: center;">
-                    <h1 style="margin: 0; font-size: 24px; letter-spacing: -0.5px;">InfoAgent</h1>
+                    <h1 style="margin: 0; font-size: 24px; letter-spacing: -0.5px;">Argos</h1>
                     <p style="margin: 8px 0 0 0; color: #9ca3af; font-size: 14px;">每日科技简报 - {summary.date}</p>
                 </div>
                 
@@ -67,7 +67,7 @@ class EmailService:
                 </div>
                 
                 <div style="background-color: #f9fafb; padding: 16px; text-align: center; color: #6b7280; font-size: 12px; border-top: 1px solid #e5e7eb;">
-                    <p style="margin: 0;">此简报由 InfoAgent AI 自动生成。</p>
+                    <p style="margin: 0;">此简报由 Argos AI 自动生成。</p>
                 </div>
             </div>
         </body>
@@ -82,7 +82,7 @@ class EmailService:
         html_content = self._render_html(summary)
         
         msg = EmailMessage()
-        msg['Subject'] = f"[InfoAgent] 每日简报 - {summary.date}"
+        msg['Subject'] = f"[Argos] 每日简报 - {summary.date}"
         msg['From'] = settings.SMTP_FROM
         msg['To'] = ", ".join(settings.EMAIL_SUBSCRIBERS)
         msg['Message-ID'] = make_msgid()

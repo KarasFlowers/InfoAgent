@@ -33,7 +33,7 @@ def ensure_env() -> None:
     if sys.stdin.isatty():
         print()
         print("=" * 50)
-        print("  InfoAgent — First-Time Setup")
+        print("  Argos — First-Time Setup")
         print("=" * 50)
         print()
         print("  .env file not found. Creating from template...")

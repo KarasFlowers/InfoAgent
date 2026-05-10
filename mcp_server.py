@@ -1,7 +1,7 @@
 """
-InfoAgent MCP Server
+Argos MCP Server
 
-Exposes InfoAgent's core capabilities as MCP (Model Context Protocol) tools,
+Exposes Argos's core capabilities as MCP (Model Context Protocol) tools,
 allowing AI assistants (Claude, Cursor, Windsurf, etc.) to:
 
 - Read today's tech briefing
@@ -28,9 +28,9 @@ from fastmcp import FastMCP
 # ---------------------------------------------------------------------------
 
 mcp = FastMCP(
-    "infoagent",
+    "argos",
     instructions=(
-        "InfoAgent is an intelligent daily tech briefing assistant. "
+        "Argos is an intelligent daily tech briefing assistant. "
         "Use these tools to query today's news, ask questions about articles, "
         "manage content boards, and control user preferences."
     ),
@@ -376,7 +376,7 @@ async def get_user_interests(board_slug: Optional[str] = None) -> str:
 
 @mcp.tool()
 async def get_system_status() -> str:
-    """Get InfoAgent system status including LLM config, boards count, and metrics.
+    """Get Argos system status including LLM config, boards count, and metrics.
 
     Returns:
         JSON with system health information.
