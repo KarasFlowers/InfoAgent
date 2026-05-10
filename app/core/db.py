@@ -50,9 +50,13 @@ async def _ensure_legacy_columns(conn) -> None:
     board_result = await conn.exec_driver_sql("PRAGMA table_info(board)")
     board_columns = {row[1] for row in board_result.fetchall()}
     if "schedule" not in board_columns:
-        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN schedule VARCHAR DEFAULT ''")
+        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN schedule TEXT NOT NULL DEFAULT ''")
     if "notify_channels" not in board_columns:
-        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN notify_channels VARCHAR DEFAULT ''")
+        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN notify_channels TEXT NOT NULL DEFAULT ''")
+
+    # Fix any rows where schedule/notify_channels ended up as NULL
+    await conn.exec_driver_sql("UPDATE board SET schedule = '' WHERE schedule IS NULL")
+    await conn.exec_driver_sql("UPDATE board SET notify_channels = '' WHERE notify_channels IS NULL")
 
 
 async def _migrate_dailysummary_date_uniqueness(conn) -> None:
@@ -110,8 +114,8 @@ async def _seed_default_board(conn) -> None:
     default_config = _json.dumps({"feeds": list(_settings.RSS_FEEDS)})
     result = await conn.exec_driver_sql(
         "INSERT INTO board (slug, name, icon, description, system_prompt, "
-        "source_type, source_config, display_order, is_active, is_default, created_at) "
-        "VALUES ('tech', '科技快讯', '📰', '默认科技 / AI 简报', ?, 'rss', ?, 0, 1, 1, CURRENT_TIMESTAMP)",
+        "source_type, source_config, display_order, is_active, is_default, schedule, notify_channels, created_at) "
+        "VALUES ('tech', '科技快讯', '📰', '默认科技 / AI 简报', ?, 'rss', ?, 0, 1, 1, '', '', CURRENT_TIMESTAMP)",
         (default_prompt, default_config),
     )
     default_id_row = await conn.exec_driver_sql("SELECT id FROM board WHERE slug = 'tech'")
