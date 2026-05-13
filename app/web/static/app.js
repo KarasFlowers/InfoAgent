@@ -8,6 +8,7 @@ let currentBoardSlug = null;
 let availableBoards = [];
 
 const SUMMARY_LOADING_TEXT = 'AI 编辑正在努力生成今日简报，这可能需要几十秒...';
+const SUMMARY_CACHE_KEY = 'argos_summary_cache';
 
 const ICONS = {
     external: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>',
@@ -18,6 +19,11 @@ const ICONS = {
 
 document.addEventListener('DOMContentLoaded', async () => {
     await initBoards();
+    // Try to render cached data immediately, then refresh in background
+    const cached = _loadCachedSummary();
+    if (cached) {
+        _renderSummaryData(cached);
+    }
     fetchSummary();
     setupRagPanel();
     setupHistoryPanel();
@@ -126,6 +132,12 @@ function switchBoard(slug) {
     document.getElementById('persona-panel').classList.remove('active');
     document.getElementById('insights-modal').style.display = 'none';
     
+    // Try to show cached data for new board immediately
+    latestData = null;
+    const cached = _loadCachedSummary();
+    if (cached) {
+        _renderSummaryData(cached);
+    }
     fetchSummary();
 }
 
@@ -428,17 +440,70 @@ async function fetchSummary(force = false, date = null) {
     await fetchSummaryWithUrl(url);
 }
 
-async function fetchSummaryWithUrl(url) {
+function _loadCachedSummary() {
+    try {
+        const raw = sessionStorage.getItem(SUMMARY_CACHE_KEY + '_' + (currentBoardSlug || 'default'));
+        if (!raw) return null;
+        const cached = JSON.parse(raw);
+        // Only use cache if it's from today
+        const today = new Date().toISOString().slice(0, 10);
+        if (cached.date !== today) return null;
+        return cached;
+    } catch { return null; }
+}
+
+function _saveCachedSummary(data) {
+    try {
+        sessionStorage.setItem(
+            SUMMARY_CACHE_KEY + '_' + (currentBoardSlug || 'default'),
+            JSON.stringify(data)
+        );
+    } catch { /* sessionStorage full, ignore */ }
+}
+
+function _clearCachedSummary() {
+    try {
+        sessionStorage.removeItem(SUMMARY_CACHE_KEY + '_' + (currentBoardSlug || 'default'));
+    } catch { /* ignore */ }
+}
+
+function _renderSummaryData(data) {
     const loadingState = document.getElementById('loading-state');
     const contentState = document.getElementById('content-state');
     const dateHeader = document.getElementById('summary-date');
     const overviewText = document.getElementById('summary-overview');
     const refreshBtn = document.getElementById('refresh-btn');
 
+    data.source_stats = data.source_stats || computeSourceStats(data.top_news || []);
+    latestData = data;
+
+    const dateObj = new Date(data.date);
+    const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    dateHeader.textContent = dateObj.toLocaleDateString('zh-CN', options);
+    overviewText.textContent = data.overview || '';
+
+    renderHome();
+    renderRecReport();
+    fetchSystemMetrics();
+
+    loadingState.style.display = 'none';
+    contentState.style.display = 'block';
+    if (refreshBtn) refreshBtn.style.display = 'inline-flex';
+}
+
+async function fetchSummaryWithUrl(url) {
+    const loadingState = document.getElementById('loading-state');
+    const contentState = document.getElementById('content-state');
+    const refreshBtn = document.getElementById('refresh-btn');
+    const hasCachedData = !!latestData;
+
     try {
-        showLoadingState();
-        contentState.style.display = 'none';
-        if (refreshBtn) refreshBtn.style.display = 'none';
+        // Only show full loading spinner if we have NO cached data to show
+        if (!hasCachedData) {
+            showLoadingState();
+            contentState.style.display = 'none';
+            if (refreshBtn) refreshBtn.style.display = 'none';
+        }
 
         const response = await fetch(url);
         if (!response.ok) {
@@ -446,24 +511,14 @@ async function fetchSummaryWithUrl(url) {
         }
 
         const data = await response.json();
-        data.source_stats = data.source_stats || computeSourceStats(data.top_news || []);
-        latestData = data;
-
-        const dateObj = new Date(data.date);
-        const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-        dateHeader.textContent = dateObj.toLocaleDateString('zh-CN', options);
-        overviewText.textContent = data.overview || '';
-
-        renderHome();
-        renderRecReport();
-        fetchSystemMetrics();
-
-        loadingState.style.display = 'none';
-        contentState.style.display = 'block';
-        if (refreshBtn) refreshBtn.style.display = 'inline-flex';
+        _renderSummaryData(data);
+        _saveCachedSummary(data);
     } catch (error) {
         console.error('Failed to fetch summary:', error);
-        showErrorState(error.message, () => fetchSummary());
+        // Only show error state if we have no cached data to fall back on
+        if (!hasCachedData) {
+            showErrorState(error.message, () => fetchSummary());
+        }
     }
 }
 
@@ -754,6 +809,10 @@ function confirmForceRefresh() {
     const preference = document.getElementById('refresh-preference').value.trim();
     const saveIt = document.getElementById('save-preference-chk').checked;
     closeRefreshModal();
+
+    // Clear cache so force refresh shows loading state
+    _clearCachedSummary();
+    latestData = null;
 
     let url = '/api/v1/summary?force=true';
     if (preference) {

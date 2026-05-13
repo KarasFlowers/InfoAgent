@@ -81,6 +81,14 @@ class ChatMessage(SQLModel, table=True):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class ArticleOverview(SQLModel, table=True):
+    """Persisted article overview text — avoids re-generating on every panel open."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    article_url: str = Field(index=True, unique=True)
+    overview_text: str = Field(sa_column=Column(Text, nullable=False))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class UserPersona(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     # The actual instruction or extracted keyword

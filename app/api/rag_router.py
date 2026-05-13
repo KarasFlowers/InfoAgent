@@ -20,6 +20,7 @@ from app.services.rag_service import (
     _ingested_urls,
     _prepare_overview_context,
     get_ingest_status,
+    get_db_cached_overview,
     ingest,
     query_stream,
     stream_article_overview,
@@ -126,6 +127,21 @@ async def ingest_article(req: IngestRequest):
 async def fetch_article_overview(req: PublicUrlRequest):
     """Generate a richer overview for the article before interactive questioning."""
     url = str(req.url)
+
+    # --- FAST PATH: DB cached overview (instant return) ---
+    cached_overview = await get_db_cached_overview(url)
+    if cached_overview:
+        async def cached_event_generator():
+            yield _format_sse_data(cached_overview)
+            yield _format_sse_data("[DONE]")
+        return StreamingResponse(
+            cached_event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     async def event_generator():
         async for token in stream_article_overview(url):

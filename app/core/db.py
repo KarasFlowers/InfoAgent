@@ -236,6 +236,7 @@ async def init_db():
             UserFeedback,
             ChatMessage,
             UserPersona,
+            ArticleOverview,
         )
         await conn.run_sync(SQLModel.metadata.create_all)
         await _ensure_legacy_columns(conn)

@@ -21,9 +21,12 @@ import trafilatura
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer, CrossEncoder
 import numpy as np
-from rank_bm25 import BM25Okapi
+from rank_bm25 import BM25OkApi
 from app.core.config import settings
 from app.core.url_safety import ensure_public_url_target
+from app.core.db import AsyncSessionLocal
+from app.models.domain import ArticleOverview
+from sqlalchemy.future import select
 
 logger = logging.getLogger(__name__)
 
@@ -523,6 +526,36 @@ async def stream_article_overview(url: str) -> AsyncGenerator[str, None]:
         raise RuntimeError("Failed to generate article overview.")
 
     _article_overview_cache[url] = full_response
+    await _save_overview_to_db(url, full_response)
+
+
+async def _save_overview_to_db(url: str, text: str) -> None:
+    try:
+        async with AsyncSessionLocal() as session:
+            stmt = select(ArticleOverview).where(ArticleOverview.article_url == url)
+            result = await session.execute(stmt)
+            existing = result.scalars().first()
+            if existing:
+                existing.overview_text = text
+            else:
+                session.add(ArticleOverview(article_url=url, overview_text=text))
+            await session.commit()
+    except Exception:
+        logger.debug("Failed to persist overview to DB", exc_info=True)
+
+
+async def get_db_cached_overview(url: str) -> str | None:
+    try:
+        async with AsyncSessionLocal() as session:
+            stmt = select(ArticleOverview).where(ArticleOverview.article_url == url)
+            result = await session.execute(stmt)
+            row = result.scalars().first()
+            if row:
+                _article_overview_cache[url] = row.overview_text
+                return row.overview_text
+    except Exception:
+        logger.debug("DB overview lookup failed", exc_info=True)
+    return None
 
 
 async def generate_article_overview(url: str) -> str:
