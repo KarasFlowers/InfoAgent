@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.models.domain import DailySummary, NewsItem, UserFeedback, ChatMessage
+from app.models.domain import DailySummary, NewsItem, UserFeedback, ChatMessage, ArticleOverview
 from app.models.schemas import (
     DailySummaryResponse, HistoryStatItem, SummaryArchiveItem,
     SummaryHistoryResponse, SummaryItem, WeeklyRecapResponse,
@@ -300,6 +300,7 @@ class SummaryRepo:
         if urls_to_delete:
             await session.execute(sa_delete(UserFeedback).where(UserFeedback.article_url.in_(urls_to_delete)))
             await session.execute(sa_delete(ChatMessage).where(ChatMessage.article_url.in_(urls_to_delete)))
+            await session.execute(sa_delete(ArticleOverview).where(ArticleOverview.article_url.in_(urls_to_delete)))
 
         for s in old_summaries:
             await session.delete(s)
