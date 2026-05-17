@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     LLM_TIMEOUT: int = 180
     LLM_MAX_RETRIES: int = 1
 
+    # Multi-model routing: "provider:model" format, e.g. "openai:gpt-4o-mini"
+    # Leave empty to fall back to LLM_MODEL for all tiers.
+    FAST_LLM: str = ""
+    SMART_LLM: str = ""
+
     # Legacy DeepSeek-specific keys (used as fallback when LLM_* is unset)
     DEEPSEEK_API_KEY: str | None = None
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
