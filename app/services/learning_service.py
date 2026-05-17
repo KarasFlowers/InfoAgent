@@ -74,12 +74,19 @@ async def _get_article_text_for_urls(session: AsyncSession, urls: list[str]) -> 
 
     # Build a mapping: url -> rich text
     url_to_text = {}
-    for link, headline, key_points_json in rows:
-        try:
-            kp_list = json.loads(key_points_json)
-            kp_text = " ".join(kp_list) if isinstance(kp_list, list) else str(kp_list)
-        except (json.JSONDecodeError, TypeError):
-            kp_text = str(key_points_json)
+    for link, headline, key_points_raw in rows:
+        # key_points is a native JSON column — SQLAlchemy returns a Python list directly.
+        # Handle str fallback for legacy rows that may not have been migrated yet.
+        if isinstance(key_points_raw, list):
+            kp_text = " ".join(key_points_raw)
+        elif isinstance(key_points_raw, str):
+            try:
+                kp_list = json.loads(key_points_raw)
+                kp_text = " ".join(kp_list) if isinstance(kp_list, list) else key_points_raw
+            except (json.JSONDecodeError, TypeError):
+                kp_text = key_points_raw
+        else:
+            kp_text = str(key_points_raw) if key_points_raw else ""
         url_to_text[link] = f"{headline} {kp_text}"
 
     # For each URL, use DB content if available, otherwise fallback
@@ -243,6 +250,7 @@ async def rerank_summary_items(items: list, session: AsyncSession | None = None)
     if not has_vectors and not has_prefs:
         return items
 
+    embeddings = None
     if has_vectors:
         from app.services.rag_service import get_bi_encoder
         bi_encoder = get_bi_encoder()

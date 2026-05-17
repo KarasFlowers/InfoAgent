@@ -1,4 +1,5 @@
 import asyncio
+import html as html_mod
 import logging
 from datetime import datetime
 from typing import Optional
@@ -103,9 +104,9 @@ async def get_rss_feed(session: AsyncSession = Depends(get_session)):
         escaped_html = html_content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
         
         xml.append('    <item>')
-        xml.append(f'      <title>Argos 日报 - {summary.date}</title>')
-        xml.append(f'      <link>{site_url}/?date={summary.date}</link>')
-        xml.append(f'      <guid isPermaLink="false">argos-{summary.date}</guid>')
+        xml.append(f'      <title>{html_mod.escape(f"Argos 日报 - {summary.date}")}</title>')
+        xml.append(f'      <link>{html_mod.escape(f"{site_url}/?date={summary.date}")}</link>')
+        xml.append(f'      <guid isPermaLink="false">argos-{html_mod.escape(summary.date)}</guid>')
         if pub_date:
             xml.append(f'      <pubDate>{pub_date}</pubDate>')
         xml.append(f'      <description>{escaped_html}</description>')
@@ -441,28 +442,9 @@ async def get_explicit_preferences(
         board_obj = await _resolve_board(session, board)
         board_id = board_obj.id if board_obj else None
 
-    categories = ["focus_topic", "block_topic", "prefer_source", "avoid_source"]
-    from sqlalchemy.future import select as sa_select
-    from app.models.domain import UserPersona
-    stmt = sa_select(UserPersona).where(
-        UserPersona.is_active == True,
-        UserPersona.category.in_(categories),
+    return await db_service.get_explicit_preferences_detailed(
+        session, board_id=board_id, include_global=include_global
     )
-    if board_id is not None:
-        if include_global:
-            stmt = stmt.where(
-                (UserPersona.board_id == board_id) | (UserPersona.board_id.is_(None))
-            )
-        else:
-            stmt = stmt.where(UserPersona.board_id == board_id)
-    result = await session.execute(stmt)
-    personas = result.scalars().all()
-    grouped: dict = {cat: [] for cat in categories}
-    for p in personas:
-        grouped[p.category].append(
-            {"id": p.id, "content": p.content, "board_id": p.board_id}
-        )
-    return grouped
 
 
 # ------------------------------------------------------------------
@@ -470,11 +452,6 @@ async def get_explicit_preferences(
 # ------------------------------------------------------------------
 
 def _serialize_board(board) -> dict:
-    import json as _json
-    try:
-        config = _json.loads(board.source_config or "{}")
-    except (_json.JSONDecodeError, TypeError):
-        config = {}
     return {
         "id": board.id,
         "slug": board.slug,
@@ -483,7 +460,7 @@ def _serialize_board(board) -> dict:
         "description": board.description,
         "system_prompt": board.system_prompt,
         "source_type": board.source_type,
-        "source_config": config,
+        "source_config": board.source_config or {},
         "display_order": board.display_order,
         "is_active": board.is_active,
         "is_default": board.is_default,
@@ -506,7 +483,6 @@ async def create_board(
     session: AsyncSession = Depends(get_session),
 ):
     """Create a new custom board."""
-    import json as _json
     existing = await db_service.get_board_by_slug(session, payload.slug)
     if existing:
         raise HTTPException(status_code=409, detail=f"Board '{payload.slug}' already exists.")
@@ -532,7 +508,7 @@ async def create_board(
         description=payload.description,
         system_prompt=payload.system_prompt,
         source_type=payload.source_type,
-        source_config=_json.dumps(payload.source_config, ensure_ascii=False),
+        source_config=payload.source_config,
         display_order=payload.display_order,
     )
     return _serialize_board(board)
@@ -566,12 +542,11 @@ async def update_board(
     session: AsyncSession = Depends(get_session),
 ):
     """Update a board's metadata/config."""
-    import json as _json
     updates = payload.model_dump(exclude_unset=True)
     from app.services.source_adapters import VALID_SOURCE_TYPES
     if "source_type" in updates and updates["source_type"] not in VALID_SOURCE_TYPES:
         raise HTTPException(status_code=400, detail=f"source_type must be one of {VALID_SOURCE_TYPES}.")
-    # Validate source_config (as dict) before serialising to JSON string
+    # Validate source_config (as dict) against the per-type schema
     if "source_config" in updates and updates["source_config"] is not None:
         st = updates.get("source_type")  # may be None if not changing
         if st:
@@ -585,7 +560,7 @@ async def update_board(
                         status_code=422,
                         detail=f"Invalid source_config for type '{st}': {val_err}",
                     )
-        updates["source_config"] = _json.dumps(updates["source_config"], ensure_ascii=False)
+        # source_config is a native JSON column; pass dict directly
     board = await db_service.update_board(session, slug, updates)
     if not board:
         raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")

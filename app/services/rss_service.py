@@ -5,6 +5,7 @@ import httpx
 from pydantic import ValidationError
 from app.models.schemas import ContentItem, RSSItem, RSSResponse
 from app.services.redis_service import redis_service
+from app.core.http_client import get_http_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -81,19 +82,15 @@ async def fetch_and_parse_feed(url: str, client: httpx.AsyncClient) -> RSSRespon
 
 async def fetch_all_feeds(urls: list[str]) -> list[RSSResponse]:
     """
-    Concurrently fetches multiple RSS feeds.
+    Concurrently fetches multiple RSS feeds using the shared httpx client.
     """
-    # Use a custom user agent as some RSS endpoints block default Python ones
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    }
-    
-    async with httpx.AsyncClient(headers=headers) as client:
-        # Create a list of async tasks
-        tasks = [fetch_and_parse_feed(url, client) for url in urls]
-        # Execute them concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+    client = get_http_client()
+
+    # Create a list of async tasks
+    tasks = [fetch_and_parse_feed(url, client) for url in urls]
+    # Execute them concurrently
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
     # Filter out None values or exceptions
     valid_results = []
     for result in results:
@@ -101,7 +98,7 @@ async def fetch_all_feeds(urls: list[str]) -> list[RSSResponse]:
             valid_results.append(result)
         elif isinstance(result, Exception):
             logger.error(f"Fetch task failed with exception: {result}")
-            
+
     return valid_results
 
 
@@ -111,6 +108,7 @@ def rss_responses_to_content_items(responses: list[RSSResponse]) -> list[Content
     for feed in responses:
         source_url = feed.source_url
         for rss_item in feed.items:
+            # MD5 used only for short deterministic ID generation, not for security
             native_id = hashlib.md5(rss_item.link.encode()).hexdigest()[:12]
             items.append(
                 ContentItem(

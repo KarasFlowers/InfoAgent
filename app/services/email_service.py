@@ -1,3 +1,4 @@
+import html as html_mod
 import logging
 import smtplib
 from email.message import EmailMessage
@@ -25,16 +26,20 @@ class EmailService:
         """Render a very simple but clean HTML email for the daily summary."""
         items_html = ""
         for item in summary.top_news:
-            tags = " ".join(item.tags)
-            points = "".join([f"<li>{pt}</li>" for pt in item.key_points])
+            tags = " ".join(html_mod.escape(t) for t in item.tags)
+            points = "".join([f"<li>{html_mod.escape(pt)}</li>" for pt in item.key_points])
+            safe_link = html_mod.escape(item.original_link, quote=True)
+            safe_headline = html_mod.escape(item.headline)
+            safe_category = html_mod.escape(item.category)
+            safe_source = html_mod.escape(item.source)
             items_html += f"""
             <div style="margin-bottom: 24px; padding: 16px; background-color: #f9fafb; border-radius: 8px;">
                 <h3 style="margin-top: 0; color: #111827; font-size: 18px;">
-                    <a href="{item.original_link}" style="color: #2563eb; text-decoration: none;">{item.headline}</a>
+                    <a href="{safe_link}" style="color: #2563eb; text-decoration: none;">{safe_headline}</a>
                 </h3>
                 <div style="margin-bottom: 12px; font-size: 13px;">
-                    <span style="display: inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 12px; margin-right: 8px;">{item.category}</span>
-                    <span style="color: #6b7280;">{tags} | 源: {item.source}</span>
+                    <span style="display: inline-block; background: #e0e7ff; color: #3730a3; padding: 2px 8px; border-radius: 12px; margin-right: 8px;">{safe_category}</span>
+                    <span style="color: #6b7280;">{tags} | 源: {safe_source}</span>
                 </div>
                 <ul style="color: #4b5563; margin: 0; padding-left: 20px; line-height: 1.5;">
                     {points}
@@ -59,7 +64,7 @@ class EmailService:
                 
                 <div style="padding: 24px;">
                     <div style="font-size: 16px; line-height: 1.6; color: #374151; margin-bottom: 32px; border-left: 4px solid #2563eb; padding-left: 16px;">
-                        {summary.overview}
+                        {html_mod.escape(summary.overview)}
                     </div>
                     
                     <h2 style="font-size: 20px; color: #111827; margin-bottom: 20px; border-bottom: 2px solid #f3f4f6; padding-bottom: 8px;">今日焦点</h2>
