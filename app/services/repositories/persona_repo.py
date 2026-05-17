@@ -87,3 +87,31 @@ class PersonaRepo:
         for p in personas:
             grouped[p.category].append(p.content)
         return grouped
+
+    async def get_explicit_preferences_detailed(
+        self,
+        session: AsyncSession,
+        board_id: int | None = None,
+        include_global: bool = True,
+    ) -> dict[str, list[dict]]:
+        """Like get_explicit_preferences but returns full details (id, content, board_id)."""
+        categories = ["focus_topic", "block_topic", "prefer_source", "avoid_source"]
+        statement = select(UserPersona).where(
+            UserPersona.is_active == True,
+            UserPersona.category.in_(categories),
+        )
+        if board_id is not None:
+            if include_global:
+                statement = statement.where(
+                    (UserPersona.board_id == board_id) | (UserPersona.board_id.is_(None))
+                )
+            else:
+                statement = statement.where(UserPersona.board_id == board_id)
+        result = await session.execute(statement)
+        personas = result.scalars().all()
+        grouped: dict[str, list[dict]] = {cat: [] for cat in categories}
+        for p in personas:
+            grouped[p.category].append(
+                {"id": p.id, "content": p.content, "board_id": p.board_id}
+            )
+        return grouped

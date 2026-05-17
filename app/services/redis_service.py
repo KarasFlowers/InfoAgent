@@ -22,7 +22,7 @@ class RedisService:
                 await self._redis.ping()
                 logger.info("Successfully connected to Redis.")
             except Exception as e:
-                logger.warning(f"Failed to connect to Redis at {settings.REDIS_URL}: {e}")
+                logger.warning("Failed to connect to Redis at %s: %s", settings.REDIS_URL, e)
                 self._redis = None
                 
         return self._redis
@@ -38,7 +38,7 @@ class RedisService:
             if cached_data:
                 return json.loads(cached_data)
         except Exception as e:
-            logger.error(f"Error reading from Redis cache ({key}): {e}")
+            logger.error("Error reading from Redis cache (%s): %s", key, e)
             
         return None
         
@@ -53,8 +53,18 @@ class RedisService:
             await client.setex(key, expire_seconds, serialized_value)
             return True
         except Exception as e:
-            logger.error(f"Error writing to Redis cache ({key}): {e}")
+            logger.error("Error writing to Redis cache (%s): %s", key, e)
             return False
+
+    async def close(self) -> None:
+        """Gracefully close the Redis connection (call on app shutdown)."""
+        if self._redis is not None:
+            try:
+                await self._redis.aclose()
+                logger.debug("Redis connection closed")
+            except Exception:
+                pass
+            self._redis = None
 
 # Singleton instance
 redis_service = RedisService()

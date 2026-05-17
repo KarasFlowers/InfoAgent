@@ -43,7 +43,7 @@ class BoardRepo:
         description: str = "",
         system_prompt: str = "",
         source_type: str = "rss",
-        source_config: str = "{}",
+        source_config: dict | None = None,
         display_order: int = 0,
     ) -> Board:
         board = Board(
