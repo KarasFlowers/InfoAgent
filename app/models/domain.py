@@ -23,6 +23,8 @@ class Board(SQLModel, table=True):
     is_default: bool = Field(default=False)       # exactly one default per install
     schedule: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # cron expr e.g. "08:00" or "*/6h"; empty = use global
     notify_channels: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # comma-separated: "email,webhook,bark" ; empty = all configured
+    perspectives: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # e.g. {"active": ["technical", "business"]}; None = single-view mode
+    prompt_key: str = Field(default="daily_briefing", sa_column=Column(Text, nullable=False, server_default="daily_briefing"))  # prompt template key
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -33,6 +35,7 @@ class NewsItem(SQLModel, table=True):
     # Stored as native JSON column (migrated from JSON-string in refactor)
     key_points: list = Field(default=[], sa_column=Column(JSON))
     tags: list = Field(default=[], sa_column=Column(JSON))
+    topic_path: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # e.g. "AI/LLM/微调"
     original_link: str
     source: str
     
@@ -42,9 +45,9 @@ class NewsItem(SQLModel, table=True):
 
 
 class DailySummary(SQLModel, table=True):
-    # One summary per (board, date).
+    # One summary per (board, date, perspective).
     __table_args__ = (
-        UniqueConstraint("board_id", "date", name="ux_dailysummary_board_date"),
+        UniqueConstraint("board_id", "date", "perspective", name="ux_dailysummary_board_date_perspective"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -53,6 +56,7 @@ class DailySummary(SQLModel, table=True):
     board_id: Optional[int] = Field(
         default=None, foreign_key="board.id", index=True, ondelete="CASCADE"
     )
+    perspective: str = Field(default="overview", sa_column=Column(Text, nullable=False, server_default="overview"))  # "overview" | "technical" | "business" | custom
     overview: str
     stats_json: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -100,4 +104,7 @@ class UserPersona(SQLModel, table=True):
         default=None, foreign_key="board.id", index=True, ondelete="CASCADE"
     )
     is_active: bool = Field(default=True)
+    weight: float = Field(default=1.0)  # decay weight for auto-extracted interests
+    source: str = Field(default="manual", sa_column=Column(Text, nullable=False, server_default="manual"))  # "manual" | "auto"
+    last_refreshed: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

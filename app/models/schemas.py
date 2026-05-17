@@ -46,6 +46,7 @@ class SummaryItem(BaseModel):
     category: str
     key_points: list[str]
     tags: list[str] = Field(default_factory=list)
+    topic_path: str = ""
     original_link: str
     source: str
     feedback_sentiment: int | None = None
@@ -95,6 +96,7 @@ class SummaryHistoryResponse(BaseModel):
 class DailySummaryResponse(BaseModel):
     date: str
     overview: str
+    perspective: str = "overview"
     top_news: list[SummaryItem]
     source_stats: dict[str, int] = Field(default_factory=dict)
     # Recommendation statistics for transparency
