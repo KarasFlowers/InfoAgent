@@ -20,12 +20,25 @@ logger = logging.getLogger(__name__)
 
 class LLMService(ScoringMixin, SummaryMixin, WeeklyMixin, WizardMixin):
     def __init__(self) -> None:
-        if not settings.effective_llm_api_key:
-            logger.warning("LLM_API_KEY / DEEPSEEK_API_KEY is not set. LLM features will fail.")
-        self.llm = LLMClient(settings)
-        # Backward-compat: some call-sites still reference self.client
-        self.client = self.llm.raw
-        self.model = self.llm.model
+        self._llm: LLMClient | None = None
+
+    @property
+    def llm(self) -> LLMClient:
+        """Lazy-initialised LLM client — created on first access, not import time."""
+        if self._llm is None:
+            if not settings.effective_llm_api_key:
+                logger.warning("LLM_API_KEY / DEEPSEEK_API_KEY is not set. LLM features will fail.")
+            self._llm = LLMClient(settings)
+        return self._llm
+
+    @property
+    def client(self):
+        """Backward-compat: some call-sites still reference self.client."""
+        return self.llm.raw
+
+    @property
+    def model(self) -> str:
+        return self.llm.model
 
 
 llm_service = LLMService()

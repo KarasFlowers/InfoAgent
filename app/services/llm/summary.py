@@ -336,10 +336,7 @@ class SummaryMixin:
             logger.error("Attempted pure-LLM generation without API key.")
             return None
 
-        try:
-            config = json.loads(board.source_config or "{}")
-        except (json.JSONDecodeError, TypeError):
-            config = {}
+        config = board.source_config or {}
         items_per_day = int(config.get("items_per_day", 5))
         items_per_day = max(1, min(items_per_day, 15))
         style_hint = config.get("style", "")

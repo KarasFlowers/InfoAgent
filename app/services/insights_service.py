@@ -13,7 +13,6 @@ No new tables, no new LLM calls, no extra infra cost.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -95,14 +94,9 @@ async def get_topic_heatmap(session: AsyncSession, days: int = 7) -> dict:
         if item.category:
             buckets[item.category][idx] += 1
 
-        # ...and every tag (native JSON column → already a Python list)
-        raw_tags = item.tags or []
-        if isinstance(raw_tags, str):
-            try:
-                raw_tags = json.loads(raw_tags)
-            except (json.JSONDecodeError, TypeError):
-                raw_tags = []
-        for tag in (raw_tags if isinstance(raw_tags, list) else []):
+        # tags is a native JSON column → already a Python list
+        raw_tags = item.tags if isinstance(item.tags, list) else []
+        for tag in raw_tags:
             if not isinstance(tag, str):
                 continue
             clean = tag.lstrip("#").strip()
@@ -158,14 +152,9 @@ async def get_entity_timeline(
     for date, item in rows:
         haystack = (item.headline or "").lower()
         if needle not in haystack:
-            # fall back to searching key_points (native JSON column → already a list)
-            raw_kp = item.key_points or []
-            if isinstance(raw_kp, str):
-                try:
-                    raw_kp = json.loads(raw_kp)
-                except (json.JSONDecodeError, TypeError):
-                    raw_kp = []
-            joined = " ".join(raw_kp).lower() if isinstance(raw_kp, list) else str(raw_kp).lower()
+            # key_points is a native JSON column → already a list
+            raw_kp = item.key_points if isinstance(item.key_points, list) else []
+            joined = " ".join(raw_kp).lower()
             if needle not in joined:
                 continue
 

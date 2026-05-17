@@ -17,7 +17,7 @@ class Board(SQLModel, table=True):
     description: str = Field(default="")
     system_prompt: str = Field(default="")        # editor prompt override
     source_type: str = Field(default="rss")       # "rss" | "pure_llm" | "hackernews" | "reddit" | "github" | "multi"
-    source_config: str = Field(default="{}")      # JSON config string
+    source_config: Optional[dict] = Field(default_factory=dict, sa_column=Column(JSON))
     display_order: int = Field(default=0, index=True)
     is_active: bool = Field(default=True)
     is_default: bool = Field(default=False)       # exactly one default per install
