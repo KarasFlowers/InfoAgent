@@ -56,6 +56,8 @@ class WeeklyMixin:
                         "content": f"Here is the data from the past 7 days:\n\n{week_data}",
                     },
                 ],
+                tier="smart",
+                label="weekly",
                 temperature=0.7,
                 max_tokens=2500,
             )

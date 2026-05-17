@@ -7,51 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.schemas import ContentItem, DailySummaryResponse, RSSResponse
+from app.prompts import get_prompt
 from app.services.db_service import db_service
 
 logger = logging.getLogger(__name__)
 
-EDITOR_PROMPT = """
-You are the Chief Editor of "Argos", a highly intelligent AI assistant that curates a daily briefing of technology, AI, and interesting internet news for a busy computer science student.
 
-I will provide you with a raw list of articles scraped from various RSS feeds today.
-Your goal is to read through all these articles and create a clean, highly readable, and structured daily summary.
-
-Guidelines:
-1. Filter out noise: Ignore completely irrelevant articles, spam, or low-quality content. Focus on technology, AI trends, programming, and major industry news.
-2. Structure: Provide a high-level "overview" of today's vibe, followed by a list of "top_news".
-3. Categorization: For each news item, provide a broad "category" (e.g. "AI", "Mobile", "Software", "Cybersecurity", "Big Tech", "Hardware").
-4. Auto-Tagging: For each news item, generate 1 to 3 relevant hashtags that categorize the content.
-5. Output format: You MUST output valid JSON matching the exact schema requested. Do not include markdown code fences.
-6. Article count: Include AT LEAST 8 articles in "top_news" (or all high-quality articles if fewer than 8 are available). Aim for 8-12 items to give the reader a comprehensive view of the day.
-7. Diversity: Ensure variety across categories and sources. Do NOT over-represent a single topic even if the user has expressed interest in it. User preferences should guide priority, NOT exclusivity — still cover other important news.
-
-Input JSON schema:
-[
-  {
-    "title": "Article Title",
-    "summary": "Short snippet...",
-    "link": "URL",
-    "source": "RSS Feed Name"
-  }
-]
-
-Output JSON schema must strictly match:
-{
-  "date": "YYYY-MM-DD",
-  "overview": "A 2-3 sentence engaging summary of today's most important themes.",
-  "top_news": [
-    {
-      "headline": "Clear, standalone headline for the news item",
-      "category": "Broad category name",
-      "key_points": ["Point 1 explaining why it matters", "Point 2 with details"],
-      "tags": ["#Tag1", "#Tag2"],
-      "original_link": "the primary URL from the input",
-      "source": "the 'source' value from the input article"
-    }
-  ]
-}
-"""
+def _get_editor_prompt() -> str:
+    """Load the daily briefing editor prompt from external template."""
+    return get_prompt("daily_briefing")
 
 
 class SummaryMixin:
@@ -105,7 +69,8 @@ class SummaryMixin:
             return None, {}
 
         board_id = board.id if board else None
-        base_prompt = (board.system_prompt or EDITOR_PROMPT) if board else EDITOR_PROMPT
+        _editor_prompt = _get_editor_prompt()
+        base_prompt = (board.system_prompt or _editor_prompt) if board else _editor_prompt
         schema_suffix = (
             "\n\nIMPORTANT: You MUST output a valid JSON object matching exactly this schema "
             "(no markdown fences, no extra keys at the top level):\n"
@@ -294,6 +259,8 @@ class SummaryMixin:
                         "content": f"Today's Date: {datetime.now().strftime('%Y-%m-%d')}\n\nHere are the articles (respond in JSON):\n{input_json}",
                     },
                 ],
+                tier="smart",
+                label="summary",
                 response_format={"type": "json_object"},
                 temperature=0.3,
                 max_tokens=4000,
@@ -317,6 +284,120 @@ class SummaryMixin:
         except Exception as error:
             logger.exception("Error during LLM summarization: %s", error)
             return None, content_fallback
+
+    async def generate_perspective_summaries(
+        self,
+        content_items: list[ContentItem],
+        session: AsyncSession | None = None,
+        board=None,
+        perspectives: list[str] | None = None,
+    ) -> list[tuple[DailySummaryResponse | None, dict[str, str]]]:
+        """
+        Generate summaries for multiple perspectives from the same content items.
+
+        The shared pipeline (dedup + scoring) runs once; then each perspective
+        gets its own LLM call with a different prompt template.
+
+        Returns a list of (summary, content_fallback) tuples, one per perspective.
+        """
+        if not perspectives:
+            # Single perspective — delegate to the standard pipeline
+            result = await self.generate_daily_summary_from_items(
+                content_items, session=session, board=board
+            )
+            return [result]
+
+        import asyncio
+
+        # Run the shared pipeline once to get scored articles
+        # We reuse the full pipeline by calling generate_daily_summary_from_items
+        # for the first perspective, then re-use the scored articles for the rest.
+        first_result, fallback = await self.generate_daily_summary_from_items(
+            content_items, session=session, board=board
+        )
+        if not first_result:
+            return [(None, {})]
+
+        # For additional perspectives, re-call LLM with different prompt
+        results = [(first_result, fallback)]
+
+        for perspective_name in perspectives[1:]:
+            try:
+                perspective_prompt_key = f"{perspective_name}_briefing"
+                try:
+                    perspective_prompt = get_prompt(perspective_prompt_key)
+                except FileNotFoundError:
+                    # Fallback: use the default prompt with a perspective prefix
+                    perspective_prompt = (
+                        f"You are writing a **{perspective_name}** perspective of today's tech news.\n\n"
+                        + _get_editor_prompt()
+                    )
+
+                schema_suffix = (
+                    "\n\nIMPORTANT: You MUST output a valid JSON object matching exactly this schema "
+                    "(no markdown fences, no extra keys at the top level):\n"
+                    "{\n"
+                    '  "date": "YYYY-MM-DD",\n'
+                    '  "overview": "A 2-3 sentence engaging summary from this perspective.",\n'
+                    '  "top_news": [\n'
+                    "    {\n"
+                    '      "headline": "Clear, standalone headline",\n'
+                    '      "category": "Broad category name",\n'
+                    '      "key_points": ["Point 1", "Point 2"],\n'
+                    '      "tags": ["#Tag1", "#Tag2"],\n'
+                    '      "topic_path": "Category/Subcategory/Topic",\n'
+                    '      "original_link": "URL from input",\n'
+                    '      "source": "source value from input"\n'
+                    "    }\n"
+                    "  ]\n"
+                    "}\n"
+                    "Both `overview` and `top_news` are REQUIRED."
+                )
+
+                # Re-use the top_news from the first result as input articles
+                input_articles = [
+                    {
+                        "title": item.headline,
+                        "summary": " ".join(item.key_points[:2]),
+                        "link": item.original_link,
+                        "source": item.source,
+                    }
+                    for item in first_result.top_news
+                ]
+                input_json = json.dumps(input_articles[:12], ensure_ascii=False)
+
+                response = await self.llm.chat(
+                    messages=[
+                        {"role": "system", "content": perspective_prompt + schema_suffix},
+                        {
+                            "role": "user",
+                            "content": f"Today's Date: {datetime.now().strftime('%Y-%m-%d')}\n\nHere are the articles (respond in JSON):\n{input_json}",
+                        },
+                    ],
+                    tier="smart",
+                    label=f"summary:{perspective_name}",
+                    response_format={"type": "json_object"},
+                    temperature=0.3,
+                    max_tokens=4000,
+                )
+
+                parsed_json = json.loads(response.choices[0].message.content)
+                parsed_json["perspective"] = perspective_name
+                stats = {}
+                for item in parsed_json.get("top_news", []):
+                    source = item.get("source", "未知来源")
+                    stats[source] = stats.get(source, 0) + 1
+                parsed_json["source_stats"] = stats
+
+                perspective_summary = DailySummaryResponse(**parsed_json)
+                results.append((perspective_summary, fallback))
+            except Exception as error:
+                logger.warning(
+                    "Failed to generate perspective '%s': %s", perspective_name, error
+                )
+                results.append((None, {}))
+
+        return results
 
 
     async def generate_pure_llm_summary(
@@ -396,6 +477,8 @@ class SummaryMixin:
                     {"role": "system", "content": system_content},
                     {"role": "user", "content": user_content},
                 ],
+                tier="smart",
+                label="pure_llm",
                 response_format={"type": "json_object"},
                 temperature=0.7,
                 max_tokens=3000,
