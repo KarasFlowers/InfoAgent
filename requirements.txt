@@ -13,6 +13,9 @@ python-dotenv>=1.0.1
 sqlmodel>=0.0.19
 aiosqlite>=0.20.0
 
+# Prompt Templating
+jinja2>=3.1.0
+
 # LLM & AI
 openai>=1.35.3
 sentence-transformers>=3.0.0
