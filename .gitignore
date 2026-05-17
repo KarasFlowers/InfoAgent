@@ -90,3 +90,6 @@ dump.rdb
 # Local tools
 tools/redis/
 tools/*.zip
+
+# Documentation
+docs/
