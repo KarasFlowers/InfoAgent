@@ -55,12 +55,9 @@ def _parse_hhmm(time_str: str) -> Optional[tuple[int, int]]:
 def _run_cleanup() -> None:
     """Synchronous wrapper executed by APScheduler's thread-pool."""
     try:
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(_async_cleanup())
+        asyncio.run(_async_cleanup())
     except Exception:
         logger.exception("Scheduled cleanup failed")
-    finally:
-        loop.close()
 
 
 async def _async_cleanup() -> None:
@@ -78,24 +75,18 @@ def _make_board_push_runner(board_slug: str):
     """Factory: create a sync runner scoped to a single board slug."""
     def _run() -> None:
         try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(_async_push_boards(slugs=[board_slug]))
+            asyncio.run(_async_push_boards(slugs=[board_slug]))
         except Exception:
             logger.exception("Scheduled push failed for board '%s'", board_slug)
-        finally:
-            loop.close()
     return _run
 
 
 def _run_daily_push() -> None:
     """Synchronous wrapper — pushes boards that have NO custom schedule."""
     try:
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(_async_push_boards(only_global=True))
+        asyncio.run(_async_push_boards(only_global=True))
     except Exception:
         logger.exception("Scheduled daily push failed")
-    finally:
-        loop.close()
 
 
 async def _async_push_boards(

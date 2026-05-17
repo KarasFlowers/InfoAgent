@@ -55,6 +55,15 @@ def validate_public_url(value: AnyHttpUrl | str) -> AnyHttpUrl | str:
 
 
 async def ensure_public_url_target(url: str) -> str:
+    """Validate that *url* resolves to a public (non-private) IP address.
+
+    Security note: This check is subject to DNS rebinding / TOCTOU attacks.
+    The DNS resolution happens here, but the actual HTTP request is made later
+    by a separate client call.  A malicious DNS server could return a public IP
+    for this check and then a private IP for the real request.  For full SSRF
+    protection, the HTTP client should also pin resolved IPs or use a connect
+    callback that re-validates the target address.
+    """
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("A valid public URL is required.")

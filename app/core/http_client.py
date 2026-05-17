@@ -21,6 +21,14 @@ def get_http_client() -> httpx.AsyncClient:
         _shared_client = httpx.AsyncClient(
             timeout=30.0,
             limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+            },
+            follow_redirects=True,
         )
         logger.debug("Created shared httpx.AsyncClient")
     return _shared_client
