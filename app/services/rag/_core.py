@@ -104,11 +104,13 @@ _ingest_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=200)
 # Tracks per-URL ingestion state visible to the API layer.
 # url -> {"status": "pending"|"running"|"done"|"failed",
 #          "chunks": int, "error": str|None}
-_ingest_status: dict[str, dict] = {}
+# Capped to prevent unbounded memory growth from accumulated statuses.
+_ingest_status: _BoundedLRU = _BoundedLRU(maxsize=500)
 
 # Content fallback text (e.g. scraped body + comments from HN/Reddit).
 # Used by ``ingest`` when trafilatura extraction is too short.
-_content_fallback: dict[str, str] = {}
+# Capped to avoid unbounded growth if URLs are enqueued but never ingested.
+_content_fallback: _BoundedLRU = _BoundedLRU(maxsize=256)
 
 
 def enqueue_for_ingest(
@@ -199,8 +201,8 @@ try:
         metadata = getattr(coll_obj, "metadata", None)
         if metadata and "url" in metadata:
             _ingested_urls[metadata["url"]] = coll_obj.name
-except Exception:
-    logger.warning("Collection %s missing url metadata", coll_obj.name)
+        else:
+            logger.warning("Collection %s missing url metadata", coll_obj.name)
 except Exception:
     logger.exception("Error listing existing ChromaDB collections")
 
