@@ -4,7 +4,6 @@ RSS-based source adapter.
 Reads ``board.source_config["feeds"]`` (list of RSS URLs), fetches them,
 scores the articles, and hands off to the LLM editor for summarization.
 """
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -34,11 +33,8 @@ class RSSAdapter(SourceAdapter):
     ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
         # Resolve feed list: prefer per-board config, fall back to global.
         feeds: list[str] = []
-        try:
-            config = json.loads(board.source_config or "{}")
-            feeds = list(config.get("feeds") or [])
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Board '%s' has invalid source_config JSON", board.slug)
+        config = board.source_config or {}
+        feeds = list(config.get("feeds") or [])
 
         if not feeds:
             feeds = list(settings.RSS_FEEDS)

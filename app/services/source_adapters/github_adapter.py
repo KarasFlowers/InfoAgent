@@ -4,7 +4,6 @@ GitHub source adapter.
 Reads ``board.source_config`` for GitHub-specific settings (users, repos),
 fetches via the GitHub scraper, and hands off to the LLM editor.
 """
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -34,10 +33,7 @@ class GitHubAdapter(SourceAdapter):
         from app.core.http_client import get_http_client
         from app.scrapers.github import GitHubScraper
 
-        try:
-            config = json.loads(board.source_config or "{}")
-        except (json.JSONDecodeError, TypeError):
-            config = {}
+        config = board.source_config or {}
 
         scraper_config = {
             "enabled": True,

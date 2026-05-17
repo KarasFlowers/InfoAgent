@@ -25,7 +25,6 @@ Example ``board.source_config``::
     }
 """
 import asyncio
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -55,10 +54,7 @@ class MultiSourceAdapter(SourceAdapter):
         session: AsyncSession,
         one_time_preference: str | None = None,
     ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
-        try:
-            config = json.loads(board.source_config or "{}")
-        except (json.JSONDecodeError, TypeError):
-            config = {}
+        config = board.source_config or {}
 
         sources_cfg: dict = config.get("sources", {})
         if not sources_cfg:
