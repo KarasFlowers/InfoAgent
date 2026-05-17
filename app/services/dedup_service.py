@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from app.models.schemas import ContentItem
+from app.prompts import get_prompt
 
 if TYPE_CHECKING:
     from app.services.llm.client import LLMClient
@@ -20,19 +21,7 @@ logger = logging.getLogger(__name__)
 # Prompts for AI semantic dedup
 # ---------------------------------------------------------------------------
 
-TOPIC_DEDUP_SYSTEM = (
-    "You are a deduplication assistant. Given a numbered list of news items "
-    "(title, tags, summary), identify groups of items that cover **the same story "
-    "or topic**. Two items are duplicates if they report on the same event, "
-    "announcement, or subject — even if their titles differ.\n\n"
-    "Return a JSON object:\n"
-    '{"duplicates": [[primary_index, dup_index, ...], ...]}\n\n'
-    "Rules:\n"
-    "- Each group lists the indices of duplicate items. The first index in each "
-    "group is the *primary* (keep). The rest are duplicates (drop).\n"
-    "- Items that are NOT duplicates of anything should NOT appear in any group.\n"
-    "- Output ONLY the JSON object, nothing else."
-)
+TOPIC_DEDUP_SYSTEM = get_prompt("semantic_dedup")
 
 TOPIC_DEDUP_USER = (
     "Here are the items:\n\n{items}"
@@ -172,6 +161,8 @@ async def merge_topic_duplicates(
                 {"role": "system", "content": TOPIC_DEDUP_SYSTEM},
                 {"role": "user", "content": TOPIC_DEDUP_USER.format(items=items_text)},
             ],
+            tier="fast",
+            label="dedup",
             response_format={"type": "json_object"},
             temperature=0.1,
             max_tokens=1500,

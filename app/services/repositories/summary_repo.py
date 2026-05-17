@@ -22,8 +22,12 @@ class SummaryRepo:
         session: AsyncSession,
         date_str: str,
         board_id: int | None = None,
+        perspective: str = "overview",
     ) -> DailySummaryResponse | None:
-        statement = select(DailySummary).where(DailySummary.date == date_str)
+        statement = select(DailySummary).where(
+            DailySummary.date == date_str,
+            DailySummary.perspective == perspective,
+        )
         if board_id is not None:
             statement = statement.where(DailySummary.board_id == board_id)
         result = await session.execute(statement)
@@ -57,6 +61,7 @@ class SummaryRepo:
                     category=item.category or "Uncategorized",
                     key_points=key_points_list,
                     tags=tags_list,
+                    topic_path=item.topic_path or "",
                     original_link=item.original_link,
                     source=item.source,
                     feedback_sentiment=feedback_map.get(item.original_link),
@@ -70,6 +75,7 @@ class SummaryRepo:
         return DailySummaryResponse(
             date=db_summary.date,
             overview=db_summary.overview,
+            perspective=db_summary.perspective or "overview",
             top_news=top_news,
             source_stats=stats,
             recommendation_report=db_summary.stats_json if isinstance(db_summary.stats_json, dict) else {}
@@ -215,7 +221,11 @@ class SummaryRepo:
         board_id: int | None = None,
     ) -> None:
         try:
-            statement = select(DailySummary).where(DailySummary.date == summary.date)
+            perspective = summary.perspective or "overview"
+            statement = select(DailySummary).where(
+                DailySummary.date == summary.date,
+                DailySummary.perspective == perspective,
+            )
             if board_id is not None:
                 statement = statement.where(DailySummary.board_id == board_id)
             result = await session.execute(statement)
@@ -254,6 +264,7 @@ class SummaryRepo:
         db_summary = DailySummary(
             date=summary.date,
             board_id=board_id,
+            perspective=summary.perspective or "overview",
             overview=summary.overview,
             stats_json=summary.recommendation_report if summary.recommendation_report else None
         )
@@ -266,6 +277,7 @@ class SummaryRepo:
                 category=item.category,
                 key_points=item.key_points if isinstance(item.key_points, list) else [],
                 tags=item.tags if isinstance(item.tags, list) else [],
+                topic_path=item.topic_path or "",
                 original_link=item.original_link,
                 source=item.source,
                 summary_id=db_summary.id,
