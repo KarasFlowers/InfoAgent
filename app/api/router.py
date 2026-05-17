@@ -228,6 +228,7 @@ async def generate_summary(
     preference: Optional[str] = None,
     save_preference: bool = False,
     board: Optional[str] = None,
+    perspective: str = "overview",
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -241,7 +242,7 @@ async def generate_summary(
 
     # 1. Check database first (FAST PATH)
     if not force:
-        existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
+        existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id, perspective=perspective)
         if existing_summary:
             try:
                 existing_summary.top_news = await rerank_summary_items(existing_summary.top_news, session=session)
@@ -255,7 +256,7 @@ async def generate_summary(
 
     async with _summary_generation_lock:
         if not force:
-            existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
+            existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id, perspective=perspective)
             if existing_summary:
                 try:
                     existing_summary.top_news = await rerank_summary_items(existing_summary.top_news, session=session)
@@ -282,22 +283,70 @@ async def generate_summary(
         if not summary:
             raise HTTPException(status_code=500, detail="Failed to generate AI summary.")
 
-        try:
-            if force:
-                await db_service.replace_summary(session, summary, board_id=board_id)
-            else:
-                await db_service.save_summary(session, summary, board_id=board_id)
-        except IntegrityError:
-            logger.warning("Summary for %s already exists, returning stored version.", search_date)
-            await session.rollback()
-            existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
-            if existing_summary:
-                return existing_summary
-            raise HTTPException(status_code=500, detail="Failed to save AI summary.")
-        except Exception:
-            logger.exception("Failed to persist summary for %s", search_date)
-            await session.rollback()
-            raise HTTPException(status_code=500, detail="Failed to save AI summary.")
+        # Check if board has multiple perspectives configured
+        active_perspectives = None
+        if board_obj and board_obj.perspectives and isinstance(board_obj.perspectives, dict):
+            active_perspectives = board_obj.perspectives.get("active")
+
+        if active_perspectives and len(active_perspectives) > 1:
+            # Multi-perspective generation
+            from app.services.llm_service import llm_service
+            from app.services.source_adapters import get_adapter as _get_adapter
+
+            # Re-fetch content items from the adapter for perspective generation
+            content_items = []
+            if hasattr(adapter, '_last_content_items'):
+                content_items = adapter._last_content_items
+
+            perspective_results = await llm_service.generate_perspective_summaries(
+                content_items=content_items,
+                session=session,
+                board=board_obj,
+                perspectives=active_perspectives,
+            )
+
+            # Persist all perspective summaries
+            for persp_summary, persp_fallback in perspective_results:
+                if persp_summary:
+                    try:
+                        if force:
+                            await db_service.replace_summary(session, persp_summary, board_id=board_id)
+                        else:
+                            await db_service.save_summary(session, persp_summary, board_id=board_id)
+                    except IntegrityError:
+                        logger.warning("Perspective summary for %s/%s already exists.", search_date, persp_summary.perspective)
+                        await session.rollback()
+                    except Exception:
+                        logger.exception("Failed to persist perspective %s", persp_summary.perspective)
+                        await session.rollback()
+
+            # Return the requested perspective (or the first one)
+            requested = None
+            for persp_summary, _ in perspective_results:
+                if persp_summary and persp_summary.perspective == perspective:
+                    requested = persp_summary
+                    break
+            if not requested:
+                requested = perspective_results[0][0] if perspective_results else summary
+            summary = requested
+        else:
+            # Single perspective (standard path)
+            try:
+                if force:
+                    await db_service.replace_summary(session, summary, board_id=board_id)
+                else:
+                    await db_service.save_summary(session, summary, board_id=board_id)
+            except IntegrityError:
+                logger.warning("Summary for %s already exists, returning stored version.", search_date)
+                await session.rollback()
+                existing_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id, perspective=perspective)
+                if existing_summary:
+                    return existing_summary
+                raise HTTPException(status_code=500, detail="Failed to save AI summary.")
+            except Exception:
+                logger.exception("Failed to persist summary for %s", search_date)
+                await session.rollback()
+                raise HTTPException(status_code=500, detail="Failed to save AI summary.")
 
         if preference and save_preference:
             try:
@@ -318,7 +367,7 @@ async def generate_summary(
             fallback = {u: content_fallback[u] for u in article_urls if u in content_fallback}
             enqueue_for_ingest(article_urls, fallback_contents=fallback if fallback else None)
 
-        stored_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
+        stored_summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id, perspective=perspective)
         final = stored_summary or summary
         try:
             final.top_news = await rerank_summary_items(final.top_news, session=session)
