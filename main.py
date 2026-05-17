@@ -1,6 +1,9 @@
-# First-run bootstrap: ensure .env + data dirs exist before anything reads config
-from app.core.first_run import run_first_time_checks
-run_first_time_checks()
+# First-run bootstrap: ensure .env + data dirs exist before anything reads config.
+# Guarded so that importing this module from tests/MCP doesn't trigger interactive prompts.
+import sys as _sys
+if _sys.argv and "uvicorn" in _sys.argv[0].lower() or __name__ == "__main__":
+    from app.core.first_run import run_first_time_checks
+    run_first_time_checks()
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,6 +38,10 @@ async def lifespan(app: FastAPI):
     from app.services import rag_service
     from app.core.scheduler import start_scheduler, shutdown_scheduler
 
+    # Ensure data directories exist (covers cases where first_run was skipped)
+    from app.core.first_run import ensure_data_dirs
+    ensure_data_dirs()
+
     # This runs when the server starts up
     await init_db()
 
@@ -57,6 +64,10 @@ async def lifespan(app: FastAPI):
     # Close shared httpx client
     from app.core.http_client import close_http_client
     await close_http_client()
+
+    # Close Redis connection
+    from app.services.redis_service import redis_service
+    await redis_service.close()
 
     # Shutdown: send sentinel per worker, then wait
     for _ in worker_tasks:

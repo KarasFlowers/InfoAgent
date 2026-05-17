@@ -9,17 +9,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _resolve_path(value: str) -> str:
+    """Resolve a relative path against PROJECT_ROOT. Does NOT create directories."""
     path = Path(value)
     if path.is_absolute():
         resolved = path
     else:
         resolved = (PROJECT_ROOT / path).resolve()
-
-    resolved.mkdir(parents=True, exist_ok=True)
     return str(resolved)
 
 
 def _resolve_sqlite_uri(value: str) -> str:
+    """Resolve relative paths inside a sqlite+aiosqlite URI. Does NOT create directories."""
     prefix = "sqlite+aiosqlite:///"
     if not value.startswith(prefix):
         return value
@@ -32,7 +32,6 @@ def _resolve_sqlite_uri(value: str) -> str:
     if not resolved.is_absolute():
         resolved = (PROJECT_ROOT / resolved).resolve()
 
-    resolved.parent.mkdir(parents=True, exist_ok=True)
     return f"{prefix}{resolved.as_posix()}"
 
 
