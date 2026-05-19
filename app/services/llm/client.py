@@ -187,6 +187,7 @@ class LLMClient:
             await metrics_service.record_tokens(
                 response.usage.prompt_tokens,
                 response.usage.completion_tokens,
+                label=label,
             )
         await metrics_service.record_latency(duration)
         return response

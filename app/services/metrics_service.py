@@ -24,6 +24,10 @@ class MetricsService:
         )
         # In-memory fallback: {date_str: [float]}
         self._mem_latencies: dict[str, list[float]] = defaultdict(list)
+        # Labeled cost tracking: {date_str: {label: {"prompt": int, "completion": int, "calls": int}}}
+        self._mem_label_usage: dict[str, dict[str, dict[str, int]]] = defaultdict(
+            lambda: defaultdict(lambda: {"prompt": 0, "completion": 0, "calls": 0})
+        )
     
     @property
     def today_str(self) -> str:
@@ -32,9 +36,15 @@ class MetricsService:
     async def _get_client(self):
         return await redis_service.get_client()
 
-    async def record_tokens(self, prompt: int, completion: int) -> None:
-        """Increment the daily token count."""
+    async def record_tokens(self, prompt: int, completion: int, label: str = "") -> None:
+        """Increment the daily token count, optionally tagged by label."""
         date_str = self.today_str
+
+        # Track per-label usage
+        if label:
+            self._mem_label_usage[date_str][label]["prompt"] += prompt
+            self._mem_label_usage[date_str][label]["completion"] += completion
+            self._mem_label_usage[date_str][label]["calls"] += 1
 
         # Always record in-memory (zero cost)
         self._mem_tokens[date_str]["prompt_tokens"] += prompt
@@ -135,6 +145,29 @@ class MetricsService:
                 "p50_sec": round(p50, 2),
                 "p99_sec": round(p99, 2),
             },
+        }
+
+    async def get_cost_breakdown(self, date_str: str | None = None) -> dict:
+        """Get per-label token usage breakdown for a given date."""
+        if not date_str:
+            date_str = self.today_str
+
+        label_data = self._mem_label_usage.get(date_str, {})
+        breakdown = []
+        for label, usage in sorted(label_data.items(), key=lambda x: x[1]["prompt"] + x[1]["completion"], reverse=True):
+            breakdown.append({
+                "label": label,
+                "prompt_tokens": usage["prompt"],
+                "completion_tokens": usage["completion"],
+                "total_tokens": usage["prompt"] + usage["completion"],
+                "calls": usage["calls"],
+            })
+
+        return {
+            "date": date_str,
+            "breakdown": breakdown,
+            "total_calls": sum(item["calls"] for item in breakdown),
+            "total_tokens": sum(item["total_tokens"] for item in breakdown),
         }
 
 metrics_service = MetricsService()
