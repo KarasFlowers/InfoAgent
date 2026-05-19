@@ -7,6 +7,7 @@ imports via the facade at ``app.services.rag_service`` keep working.
 from app.services.rag._core import (  # noqa: F401
     get_bi_encoder,
     get_cross_encoder,
+    init_chroma,
     enqueue_for_ingest,
     get_ingest_status,
     ingest_worker_loop,
@@ -32,6 +33,7 @@ from app.services.rag._core import (  # noqa: F401
 __all__ = [
     "get_bi_encoder",
     "get_cross_encoder",
+    "init_chroma",
     "enqueue_for_ingest",
     "get_ingest_status",
     "ingest_worker_loop",

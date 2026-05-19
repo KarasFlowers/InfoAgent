@@ -9,6 +9,7 @@ continue to work.
 from app.services.rag import (  # noqa: F401
     get_bi_encoder,
     get_cross_encoder,
+    init_chroma,
     enqueue_for_ingest,
     get_ingest_status,
     ingest_worker_loop,

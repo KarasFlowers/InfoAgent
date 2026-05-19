@@ -13,7 +13,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime, UTC
 from functools import lru_cache
-from typing import Generator, AsyncGenerator
+from typing import Generator, AsyncGenerator, Optional
 from urllib.parse import urljoin
 
 import httpx
@@ -47,8 +47,42 @@ def get_cross_encoder() -> CrossEncoder:
     logger.info("Loading Cross-Encoder rerank model")
     return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-# In-memory ChromaDB vector store upgraded to Persistent
-_chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_DIR)
+# Lazy-initialised ChromaDB client — created on first use, not at import time.
+# This avoids triggering disk I/O (and potential crashes) when the module is
+# imported for type-checking or testing without a data directory present.
+_chroma_client: Optional[chromadb.PersistentClient] = None
+
+
+def _get_chroma_client() -> chromadb.PersistentClient:
+    """Return the shared ChromaDB PersistentClient, creating it on first call."""
+    global _chroma_client
+    if _chroma_client is None:
+        _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_DIR)
+        logger.info("ChromaDB PersistentClient initialised at %s", settings.CHROMA_DB_DIR)
+    return _chroma_client
+
+
+def init_chroma() -> None:
+    """Pre-warm ChromaDB and load existing collections.
+
+    Call this once during application startup (from FastAPI lifespan) so that
+    the first user request doesn't pay the initialisation cost.  It is safe to
+    call multiple times — subsequent calls are no-ops.
+    """
+    client = _get_chroma_client()
+    # Load existing BGE-M3 collections so we don't lose track of them.
+    # We ignore old collections (e.g. 384-dimensional ones) as they are incompatible.
+    try:
+        for coll_obj in client.list_collections():
+            if not coll_obj.name.startswith("rag-m3-"):
+                continue
+            metadata = getattr(coll_obj, "metadata", None)
+            if metadata and "url" in metadata:
+                _ingested_urls[metadata["url"]] = coll_obj.name
+            else:
+                logger.warning("Collection %s missing url metadata", coll_obj.name)
+    except Exception:
+        logger.exception("Error listing existing ChromaDB collections")
 
 
 class _BoundedLRU(OrderedDict):
@@ -152,7 +186,7 @@ def get_ingest_status(url: str) -> dict | None:
     """Return the ingestion status dict for *url*, or None if unknown."""
     if url in _ingested_urls:
         try:
-            coll = _chroma_client.get_collection(_ingested_urls[url])
+            coll = _get_chroma_client().get_collection(_ingested_urls[url])
             chunks = coll.count()
         except Exception:
             chunks = 0
@@ -193,23 +227,6 @@ async def ingest_worker_loop(worker_id: int = 0) -> None:
             _ingest_queue.task_done()
 
 
-# On startup, load existing BGE-M3 collections so we don't lose track of them.
-# We ignore old collections (e.g. 384-dimensional ones) as they are incompatible.
-try:
-    for coll_obj in _chroma_client.list_collections():
-        if not coll_obj.name.startswith("rag-m3-"):
-            continue
-        metadata = getattr(coll_obj, "metadata", None)
-        if metadata and "url" in metadata:
-            _ingested_urls[metadata["url"]] = coll_obj.name
-        else:
-            logger.warning("Collection %s missing url metadata", coll_obj.name)
-except Exception:
-    logger.exception("Error listing existing ChromaDB collections")
-
-
-# ... rest of the code remains the same ...
-
 def _build_bm25_index(chunks: list[str]) -> tuple[BM25Okapi, list[str]]:
     tokenized = [chunk.lower().split() for chunk in chunks]
     return BM25Okapi(tokenized), chunks
@@ -220,7 +237,7 @@ def _load_collection_chunks(url: str) -> list[str]:
     if not collection_name:
         return []
 
-    collection = _chroma_client.get_collection(collection_name)
+    collection = _get_chroma_client().get_collection(collection_name)
     payload = collection.get(include=["documents"])
     documents = payload.get("documents") or []
     return [doc for doc in documents if isinstance(doc, str) and doc.strip()]
@@ -673,7 +690,7 @@ async def ingest(url: str) -> dict:
     cached_quality = _article_quality_cache.get(url, {"score": 1.0, "verdict": "good", "details": ""})
 
     if url in _ingested_urls:
-        coll = _chroma_client.get_collection(_ingested_urls[url])
+        coll = _get_chroma_client().get_collection(_ingested_urls[url])
         return {"chunks": coll.count(), "quality": cached_quality}
     
     # Fetch and chunk in thread (CPU-bound)
@@ -703,11 +720,11 @@ async def ingest(url: str) -> dict:
     collection_name = _collection_name_for(url)
     # Delete old collection if it exists
     try:
-        _chroma_client.delete_collection(collection_name)
+        _get_chroma_client().delete_collection(collection_name)
     except Exception:
         pass
     
-    collection = _chroma_client.create_collection(
+    collection = _get_chroma_client().create_collection(
         name=collection_name, 
         metadata={"url": url, "ingested_at": datetime.now(UTC).isoformat()}
     )
@@ -733,7 +750,7 @@ async def delete_collections_by_urls(urls: list[str]) -> int:
         collection_name = _collection_name_for(url)
         try:
             # Remove from ChromaDB
-            _chroma_client.delete_collection(collection_name)
+            _get_chroma_client().delete_collection(collection_name)
             # Clear local tracking caches
             _ingested_urls.pop(url, None)
             _bm25_indices.pop(url, None)
@@ -793,7 +810,7 @@ async def _recall_and_rerank(question: str, url: str, top_k_recall: int = 20, to
     if not collection_name:
         return []
     
-    collection = _chroma_client.get_collection(collection_name)
+    collection = _get_chroma_client().get_collection(collection_name)
     
     # --- PATH A: Bi-Encoder (Vector) Recall ---
     bi_encoder = get_bi_encoder()
@@ -971,7 +988,7 @@ async def _recall_and_rerank_cross_article(
     now = datetime.now(UTC)
     for url, collection_name in items:
         try:
-            coll_obj = _chroma_client.get_collection(collection_name)
+            coll_obj = _get_chroma_client().get_collection(collection_name)
             meta = getattr(coll_obj, "metadata", None) or {}
             ingested_at_str = meta.get("ingested_at", "")
             if ingested_at_str:
@@ -989,7 +1006,7 @@ async def _recall_and_rerank_cross_article(
 
     for url, collection_name in items:
         try:
-            collection = _chroma_client.get_collection(collection_name)
+            collection = _get_chroma_client().get_collection(collection_name)
             count = collection.count()
             if count == 0:
                 continue
