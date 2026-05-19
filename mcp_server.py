@@ -175,7 +175,7 @@ async def generate_summary(board_slug: str = "tech") -> str:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def ask_article(question: str, article_url: Optional[str] = None) -> str:
+async def ask_article(question: str, article_url: Optional[str] = None, history: Optional[list[dict]] = None) -> str:
     """Ask a question about a previously ingested article using RAG.
 
     If article_url is provided, the question is scoped to that article.
@@ -184,6 +184,7 @@ async def ask_article(question: str, article_url: Optional[str] = None) -> str:
     Args:
         question: The question to ask.
         article_url: Optional URL to scope the question to a specific article.
+        history: Optional chat history [{"role","content"}] for multi-turn conversation.
 
     Returns:
         The AI-generated answer with source citations.
@@ -193,7 +194,7 @@ async def ask_article(question: str, article_url: Optional[str] = None) -> str:
 
     full_answer = ""
     metadata = None
-    async for chunk in query_stream(question, article_url=article_url):
+    async for chunk in query_stream(question, url=article_url or "", history=history):
         if chunk.startswith("[METADATA]") and chunk.endswith("[/METADATA]"):
             metadata = json.loads(chunk[10:-11])
         else:
@@ -203,6 +204,38 @@ async def ask_article(question: str, article_url: Optional[str] = None) -> str:
     if metadata:
         result["citations"] = metadata.get("citations", [])
         result["chunks_used"] = metadata.get("chunks_used", 0)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def ask_global(question: str, max_results: int = 5) -> str:
+    """Ask a question across all ingested articles using cross-article RAG.
+
+    Searches all previously ingested articles and synthesizes an answer
+    with multi-source citations.
+
+    Args:
+        question: The question to ask.
+        max_results: Maximum number of source chunks to use (1-10).
+
+    Returns:
+        The AI-generated answer with source citations from multiple articles.
+    """
+    await _ensure_db()
+    from app.services.rag_service import query_cross_article
+
+    full_answer = ""
+    metadata = None
+    async for chunk in query_cross_article(question, top_k_final=min(max_results, 10)):
+        if chunk.startswith("[METADATA]") and chunk.endswith("[/METADATA]"):
+            metadata = json.loads(chunk[10:-11])
+        else:
+            full_answer += chunk
+
+    result = {"answer": full_answer}
+    if metadata:
+        result["citations"] = metadata.get("citations", [])
+        result["mode"] = "cross_article"
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -399,6 +432,117 @@ async def get_system_status() -> str:
         "rag_hyde_enabled": settings.RAG_HYDE_ENABLED,
         "notify_channels": settings.NOTIFY_CHANNELS,
     }, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tools: Research
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def deep_research(question: str, max_sub_queries: int = 4) -> str:
+    """Run a deep research cycle on a question. Decomposes it into sub-queries,
+    searches RAG + web, then synthesizes a structured report.
+
+    Args:
+        question: The research question.
+        max_sub_queries: Maximum sub-queries to decompose into (2-6).
+
+    Returns:
+        JSON with sub_queries, findings, and report (markdown).
+    """
+    await _ensure_db()
+    from app.services.research_service import research
+    result = await research(question=question, max_sub_queries=max_sub_queries)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def get_weekly_report(board_slug: str = "tech", days: int = 7) -> str:
+    """Generate a structured weekly report with themes, stats, and editorial.
+
+    Args:
+        board_slug: Board to generate the report for.
+        days: Number of days to include (1-10).
+
+    Returns:
+        JSON with themes, stats, and editorial markdown.
+    """
+    await _ensure_db()
+    from app.core.db import AsyncSessionLocal
+    from app.services.db_service import db_service
+    from app.services.llm_service import llm_service
+
+    async with AsyncSessionLocal() as session:
+        board = await db_service.get_board_by_slug(session, board_slug)
+        board_id = board.id if board else None
+        history = await db_service.get_summary_history(session, limit=min(days, 10), board_id=board_id)
+        if not history.archive_items:
+            return json.dumps({"error": "No history found."})
+
+        summaries_data = []
+        for item in history.archive_items:
+            full = await db_service.get_summary_by_date(session, item.date, board_id=board_id)
+            if full:
+                summaries_data.append(full.model_dump())
+
+    report = await llm_service.generate_structured_weekly_report(summaries_data)
+    if not report:
+        return json.dumps({"error": "Failed to generate report."})
+    return json.dumps(report, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def get_topic_tree(days: int = 7) -> str:
+    """Get a hierarchical topic tree from article topic_path fields.
+
+    Args:
+        days: Number of days to aggregate (1-30).
+
+    Returns:
+        JSON with nested tree structure.
+    """
+    await _ensure_db()
+    from app.core.db import AsyncSessionLocal
+    from app.services.insights_service import get_topic_tree
+
+    async with AsyncSessionLocal() as session:
+        result = await get_topic_tree(session, min(days, 30))
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def get_trending_topics(days: int = 7, top_n: int = 10) -> str:
+    """Find topics trending upward in the recent half vs prior half of the period.
+
+    Args:
+        days: Number of days to analyze (2-30).
+        top_n: Number of trending topics to return.
+
+    Returns:
+        JSON with trending topics and their deltas.
+    """
+    await _ensure_db()
+    from app.core.db import AsyncSessionLocal
+    from app.services.insights_service import get_trending_topics
+
+    async with AsyncSessionLocal() as session:
+        result = await get_trending_topics(session, max(2, min(days, 30)), top_n)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def get_cost_breakdown(date: str = "") -> str:
+    """Get per-label LLM token usage breakdown for cost tracking.
+
+    Args:
+        date: Date in YYYY-MM-DD format. Empty = today.
+
+    Returns:
+        JSON with label-level token usage and call counts.
+    """
+    from app.services.metrics_service import metrics_service
+    result = await metrics_service.get_cost_breakdown(date or None)
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
