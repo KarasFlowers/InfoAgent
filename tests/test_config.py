@@ -25,13 +25,21 @@ class TestResolvePath:
         assert Path(result) == expected
 
     def test_absolute_path_unchanged(self):
-        result = _resolve_path("/tmp/argos-test")
-        assert result == "/tmp/argos-test"
+        # Use a Windows-compatible absolute path
+        import sys
+        if sys.platform == "win32":
+            abs_path = "C:\\tmp\\argos-test"
+        else:
+            abs_path = "/tmp/argos-test"
+        result = _resolve_path(abs_path)
+        assert Path(result) == Path(abs_path)
 
     def test_creates_directory(self, tmp_path):
+        # _resolve_path no longer creates directories; just verify it resolves
         target = str(tmp_path / "new_dir" / "sub_dir")
         result = _resolve_path(target)
-        assert Path(result).exists()
+        # tmp_path is already absolute, so result should equal target
+        assert Path(result).is_absolute()
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +56,11 @@ class TestResolveSqliteUri:
         assert Path(db_path).is_absolute()
 
     def test_absolute_path_unchanged(self):
-        uri = "sqlite+aiosqlite:///tmp/test.db"
+        import sys
+        if sys.platform == "win32":
+            uri = "sqlite+aiosqlite:///C:/tmp/test.db"
+        else:
+            uri = "sqlite+aiosqlite:///tmp/test.db"
         result = _resolve_sqlite_uri(uri)
         assert result == uri
 

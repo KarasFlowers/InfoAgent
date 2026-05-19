@@ -16,16 +16,17 @@ class FakeScorer(ScoringMixin):
 
     def __init__(self, llm_response: str = '{"scores": []}'):
         self.llm = MagicMock()
-        self.llm.chat = AsyncMock()
-        self._mock_response = llm_response
+        self.llm.chat = AsyncMock(return_value=self._make_response(llm_response))
 
-    async def _call_llm(self, *args, **kwargs):
+    @staticmethod
+    def _make_response(content: str):
         mock_msg = MagicMock()
-        mock_msg.content = self._mock_response
+        mock_msg.content = content
         mock_choice = MagicMock()
         mock_choice.message = mock_msg
         mock_resp = MagicMock()
         mock_resp.choices = [mock_choice]
+        mock_resp.usage = None
         return mock_resp
 
 
@@ -44,7 +45,6 @@ class TestScoreExtraction:
             ]
         })
         scorer = FakeScorer(response)
-        scorer.llm.chat = AsyncMock(return_value=scorer._make_response(response))
 
         articles = [
             {"title": "AI breakthrough", "summary": "New model"},
@@ -52,7 +52,11 @@ class TestScoreExtraction:
             {"title": "Python 3.13", "summary": "New release"},
         ]
 
-        result = await scorer._score_articles(articles)
+        from unittest.mock import patch
+        with patch("app.services.metrics_service.metrics_service") as mock_metrics:
+            mock_metrics.record_tokens = AsyncMock()
+            mock_metrics.record_latency = AsyncMock()
+            result = await scorer._score_articles(articles)
         # Should return high-quality articles (score > 5)
         assert isinstance(result, tuple)
 
@@ -60,10 +64,13 @@ class TestScoreExtraction:
     async def test_handles_empty_scores(self):
         response = '{"scores": []}'
         scorer = FakeScorer(response)
-        scorer.llm.chat = AsyncMock(return_value=scorer._make_response(response))
 
         articles = [{"title": "Test", "summary": "Test summary"}]
-        result = await scorer._score_articles(articles)
+        from unittest.mock import patch
+        with patch("app.services.metrics_service.metrics_service") as mock_metrics:
+            mock_metrics.record_tokens = AsyncMock()
+            mock_metrics.record_latency = AsyncMock()
+            result = await scorer._score_articles(articles)
         assert isinstance(result, tuple)
 
     @pytest.mark.anyio
@@ -71,11 +78,14 @@ class TestScoreExtraction:
         """LLM sometimes returns slightly invalid JSON — should not crash."""
         response = 'Here are the scores: {"scores": [{"index": 0, "score": 7}]}'
         scorer = FakeScorer(response)
-        scorer.llm.chat = AsyncMock(return_value=scorer._make_response(response))
 
         articles = [{"title": "Test", "summary": "Test"}]
-        # Should not raise
-        result = await scorer._score_articles(articles)
+        from unittest.mock import patch
+        with patch("app.services.metrics_service.metrics_service") as mock_metrics:
+            mock_metrics.record_tokens = AsyncMock()
+            mock_metrics.record_latency = AsyncMock()
+            # Should not raise
+            result = await scorer._score_articles(articles)
         assert isinstance(result, tuple)
 
     @pytest.mark.anyio
@@ -83,20 +93,15 @@ class TestScoreExtraction:
         """Some LLMs return a list instead of an object."""
         response = json.dumps([{"index": 0, "score": 7}, {"index": 1, "score": 2}])
         scorer = FakeScorer(response)
-        scorer.llm.chat = AsyncMock(return_value=scorer._make_response(response))
 
         articles = [
             {"title": "Good article", "summary": "Great"},
             {"title": "Bad article", "summary": "Meh"},
         ]
-        result = await scorer._score_articles(articles)
+        from unittest.mock import patch
+        with patch("app.services.metrics_service.metrics_service") as mock_metrics:
+            mock_metrics.record_tokens = AsyncMock()
+            mock_metrics.record_latency = AsyncMock()
+            result = await scorer._score_articles(articles)
         assert isinstance(result, tuple)
 
-    def _make_response(self, content):
-        mock_msg = MagicMock()
-        mock_msg.content = content
-        mock_choice = MagicMock()
-        mock_choice.message = mock_msg
-        mock_resp = MagicMock()
-        mock_resp.choices = [mock_choice]
-        return mock_resp

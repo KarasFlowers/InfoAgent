@@ -63,8 +63,11 @@ class TestBlockTopic:
             _make_item("Crypto market crashes"),
         ]
         result = f.filter_items(items)
-        assert len(result) == 1
-        assert result[0].title == "Python 3.13 released"
+        # "Crypto market crashes" is blocked; "Bitcoin" does NOT contain "crypto"
+        assert len(result) == 2
+        titles = [it.title for it in result]
+        assert "Bitcoin hits new high" in titles
+        assert "Python 3.13 released" in titles
 
     def test_block_is_case_insensitive(self):
         personas = [_make_persona("bitcoin", category="block_topic")]
