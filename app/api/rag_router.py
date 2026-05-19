@@ -23,6 +23,7 @@ from app.services.rag_service import (
     get_db_cached_overview,
     ingest,
     query_stream,
+    query_cross_article,
     stream_article_overview,
 )
 
@@ -58,10 +59,16 @@ class IngestRequest(PublicUrlRequest):
 
 class QueryRequest(PublicUrlRequest):
     question: str = Field(min_length=1)
+    history: list[dict] | None = Field(default=None, description="Optional chat history [{role,content}] to avoid DB round-trip")
 
 
 class FeedbackRequest(PublicUrlRequest):
     sentiment: Literal[1, -1, 0]
+
+
+class GlobalQueryRequest(BaseModel):
+    question: str = Field(min_length=1)
+    max_results: int = Field(default=10, ge=1, le=30)
 
 
 @rag_router.get("/ingest_status")
@@ -184,7 +191,7 @@ async def query_article(req: QueryRequest):
         )
 
     async def event_generator():
-        async for token in query_stream(req.question, url):
+        async for token in query_stream(req.question, url, history=req.history):
             yield _format_sse_data(token)
         yield _format_sse_data("[DONE]")
 
@@ -240,3 +247,27 @@ async def submit_feedback(req: FeedbackRequest):
     except Exception:
         logger.exception("Failed to record feedback for %s", url)
         raise HTTPException(status_code=500, detail="Failed to record feedback.")
+
+
+@rag_router.post("/query/global")
+async def query_global(req: GlobalQueryRequest):
+    """
+    Cross-article RAG query: search all ingested articles and stream an answer.
+    Returns an SSE stream of text tokens with multi-source citations.
+    """
+    async def event_generator():
+        async for token in query_cross_article(
+            req.question,
+            top_k_final=min(req.max_results, 10),
+        ):
+            yield _format_sse_data(token)
+        yield _format_sse_data("[DONE]")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

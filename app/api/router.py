@@ -126,6 +126,14 @@ async def get_system_metrics(date: str | None = None):
     return await metrics_service.get_daily_metrics(date)
 
 
+@api_router.get("/metrics/cost")
+async def get_cost_breakdown(date: str | None = None):
+    """
+    Get per-label LLM cost breakdown (token usage per label) for a given date.
+    """
+    return await metrics_service.get_cost_breakdown(date)
+
+
 @api_router.get("/insights/heatmap")
 async def get_insights_heatmap(
     session: AsyncSession = Depends(get_session),
@@ -149,6 +157,46 @@ async def get_insights_timeline(
     """
     from app.services.insights_service import get_entity_timeline
     return await get_entity_timeline(session, entity, days)
+
+
+@api_router.get("/insights/topic_tree")
+async def get_insights_topic_tree(
+    session: AsyncSession = Depends(get_session),
+    days: int = Query(default=7, ge=1, le=30),
+):
+    """Get a hierarchical topic tree built from topic_path fields."""
+    from app.services.insights_service import get_topic_tree
+    return await get_topic_tree(session, days)
+
+
+@api_router.get("/insights/trending")
+async def get_insights_trending(
+    session: AsyncSession = Depends(get_session),
+    days: int = Query(default=7, ge=2, le=30),
+    top_n: int = Query(default=10, ge=1, le=50),
+):
+    """Find topics trending upward in the recent half vs prior half of the period."""
+    from app.services.insights_service import get_trending_topics
+    return await get_trending_topics(session, days, top_n)
+
+
+@api_router.post("/research")
+async def deep_research(payload: dict):
+    """
+    Run a simplified deep research cycle on a question.
+
+    Body: {"question": "...", "max_sub_queries": 4, "rag_top_k": 5}
+    """
+    question = payload.get("question", "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="'question' is required.")
+    from app.services.research_service import research
+    result = await research(
+        question=question,
+        max_sub_queries=int(payload.get("max_sub_queries", 4)),
+        rag_top_k=int(payload.get("rag_top_k", 5)),
+    )
+    return result
 
 
 @api_router.get("/ping")
@@ -510,6 +558,8 @@ def _serialize_board(board) -> dict:
         "system_prompt": board.system_prompt,
         "source_type": board.source_type,
         "source_config": board.source_config or {},
+        "perspectives": board.perspectives or {},
+        "prompt_key": board.prompt_key or "daily_briefing",
         "display_order": board.display_order,
         "is_active": board.is_active,
         "is_default": board.is_default,
@@ -582,6 +632,17 @@ async def get_board(slug: str, session: AsyncSession = Depends(get_session)):
     if not board:
         raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")
     return _serialize_board(board)
+
+
+@api_router.get("/boards/{slug}/perspectives")
+async def get_board_perspectives(slug: str, session: AsyncSession = Depends(get_session)):
+    """List available perspectives for a board."""
+    board = await db_service.get_board_by_slug(session, slug)
+    if not board:
+        raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")
+    perspectives_data = board.perspectives or {}
+    active = perspectives_data.get("active", ["overview"])
+    return {"perspectives": active, "default": active[0] if active else "overview"}
 
 
 @api_router.patch("/boards/{slug}")
@@ -678,3 +739,37 @@ async def get_weekly_insight(
         raise HTTPException(status_code=500, detail="Failed to generate weekly insight.")
 
     return {"weekly_insight": insight}
+
+
+@api_router.get("/history/weekly_report")
+async def get_weekly_report(
+    limit: int = 7,
+    board: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Generate a structured weekly report with themes, stats, and editorial.
+    Multi-stage LLM pipeline (fast → fast → smart).
+    """
+    safe_limit = max(1, min(limit, 10))
+    board_obj = await _resolve_board(session, board)
+    board_id = board_obj.id if board_obj else None
+
+    history = await db_service.get_summary_history(session, limit=safe_limit, board_id=board_id)
+    if not history.archive_items:
+        raise HTTPException(status_code=404, detail="No history found to summarize.")
+
+    summaries_data = []
+    for item in history.archive_items:
+        full = await db_service.get_summary_by_date(session, item.date, board_id=board_id)
+        if full:
+            summaries_data.append(full.model_dump())
+
+    if not summaries_data:
+        raise HTTPException(status_code=404, detail="Failed to retrieve history content.")
+
+    report = await llm_service.generate_structured_weekly_report(summaries_data)
+    if not report:
+        raise HTTPException(status_code=500, detail="Failed to generate weekly report.")
+
+    return report
