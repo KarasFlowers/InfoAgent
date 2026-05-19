@@ -292,3 +292,104 @@ async def rerank_summary_items(items: list, session: AsyncSession | None = None)
 
     scored_items.sort(key=lambda x: x.persona_score or 0, reverse=True)
     return scored_items
+
+
+async def auto_extract_interests(session: AsyncSession) -> int:
+    """
+    Automatically extract long-term interests from liked articles and
+    persist them as UserPersona entries with source='auto'.
+
+    For each liked article that hasn't been processed yet, call the LLM
+    to propose abstract interest descriptions, then save the top one.
+
+    Returns the number of new auto-extracted interests saved.
+    """
+    from app.services.llm_service import llm_service
+    from app.models.domain import UserPersona
+    from datetime import datetime, UTC
+
+    # Get liked article URLs
+    stmt = select(UserFeedback.article_url).where(UserFeedback.sentiment == 1)
+    res = await session.execute(stmt)
+    liked_urls = res.scalars().all()
+    if not liked_urls:
+        return 0
+
+    # Get existing auto-extracted persona contents to avoid duplicates
+    existing_stmt = select(UserPersona.content).where(
+        UserPersona.source == "auto",
+        UserPersona.is_active == True,
+    )
+    existing_res = await session.execute(existing_stmt)
+    existing_contents = {row[0] for row in existing_res.all()}
+
+    # Get liked article details
+    article_stmt = select(
+        NewsItem.headline, NewsItem.key_points, NewsItem.tags, NewsItem.original_link
+    ).where(NewsItem.original_link.in_(liked_urls))
+    article_res = await session.execute(article_stmt)
+    articles = article_res.all()
+
+    if not articles:
+        return 0
+
+    new_count = 0
+    for headline, key_points_raw, tags_raw, url in articles:
+        # Parse key_points and tags
+        if isinstance(key_points_raw, list):
+            kp = key_points_raw
+        elif isinstance(key_points_raw, str):
+            try:
+                kp = json.loads(key_points_raw)
+            except (json.JSONDecodeError, TypeError):
+                kp = []
+        else:
+            kp = []
+
+        if isinstance(tags_raw, list):
+            tags = tags_raw
+        elif isinstance(tags_raw, str):
+            try:
+                tags = json.loads(tags_raw)
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+        else:
+            tags = []
+
+        # Ask LLM for interest options
+        try:
+            options = await llm_service.extract_interest_options(
+                headline=headline, key_points=kp, tags=tags
+            )
+        except Exception:
+            continue
+
+        if not options:
+            continue
+
+        # Pick the most abstract option (last one) if it's not already extracted
+        chosen = options[-1] if len(options) >= 2 else options[0]
+        if chosen in existing_contents:
+            continue
+
+        # Save as auto-extracted persona
+        persona = UserPersona(
+            content=chosen,
+            category="extracted",
+            is_active=True,
+            weight=0.8,
+            source="auto",
+            last_refreshed=datetime.now(UTC),
+        )
+        session.add(persona)
+        existing_contents.add(chosen)
+        new_count += 1
+
+        # Limit: don't extract more than 5 per run
+        if new_count >= 5:
+            break
+
+    if new_count > 0:
+        await session.commit()
+
+    return new_count

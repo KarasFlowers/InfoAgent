@@ -171,3 +171,100 @@ async def get_entity_timeline(
     # Ensure the list is sorted newest-first (same order our loader returned).
     items.sort(key=lambda x: x["date"], reverse=True)
     return {"entity": query, "days": days, "total": len(items), "items": items}
+
+
+async def get_topic_tree(session: AsyncSession, days: int = 7) -> dict:
+    """
+    Build a hierarchical topic tree from ``topic_path`` fields.
+
+    Each ``topic_path`` is a slash-separated string like ``"AI/LLM/微调"``.
+    The tree is aggregated over the last *days* days.
+
+    Output::
+
+        {
+          "tree": {
+            "AI": {"count": 15, "children": {"LLM": {"count": 8, "children": {...}}}},
+            "Hardware": {"count": 3, "children": {}}
+          }
+        }
+    """
+    rows = await _load_items_within(session, days)
+
+    root: dict[str, dict] = {}
+
+    for _date, item in rows:
+        path = (item.topic_path or "").strip()
+        if not path:
+            # Fallback: use category as a single-level path
+            path = item.category or "Uncategorized"
+
+        parts = [p.strip() for p in path.split("/") if p.strip()]
+        if not parts:
+            continue
+
+        node = root
+        for part in parts:
+            if part not in node:
+                node[part] = {"count": 0, "children": {}}
+            node[part]["count"] += 1
+            node = node[part]["children"]
+
+    return {"tree": root}
+
+
+async def get_trending_topics(session: AsyncSession, days: int = 7, top_n: int = 10) -> dict:
+    """
+    Find topics whose frequency has increased the most in recent days
+    compared to the prior period. Uses ``topic_path`` and ``category``.
+
+    Output::
+
+        {
+          "trending": [
+            {"topic": "AI/LLM", "recent_count": 8, "prior_count": 3, "delta": 5},
+            ...
+          ]
+        }
+    """
+    import math
+
+    half = days // 2
+    if half < 1:
+        half = 1
+
+    rows = await _load_items_within(session, days)
+
+    # Split into recent half and prior half
+    today = datetime.now()
+    recent_cutoff = (today - timedelta(days=half)).strftime("%Y-%m-%d")
+
+    recent: dict[str, int] = defaultdict(int)
+    prior: dict[str, int] = defaultdict(int)
+
+    for date, item in rows:
+        path = (item.topic_path or "").strip()
+        if not path:
+            path = item.category or "Uncategorized"
+
+        # Use first 2 levels of the path for trending
+        parts = [p.strip() for p in path.split("/") if p.strip()]
+        topic_key = "/".join(parts[:2]) if len(parts) >= 2 else parts[0] if parts else path
+
+        if date >= recent_cutoff:
+            recent[topic_key] += 1
+        else:
+            prior[topic_key] += 1
+
+    # Compute deltas
+    all_topics = set(recent.keys()) | set(prior.keys())
+    trending = []
+    for topic in all_topics:
+        rc = recent.get(topic, 0)
+        pc = prior.get(topic, 0)
+        delta = rc - pc
+        if delta > 0:
+            trending.append({"topic": topic, "recent_count": rc, "prior_count": pc, "delta": delta})
+
+    trending.sort(key=lambda x: x["delta"], reverse=True)
+    return {"trending": trending[:top_n]}
