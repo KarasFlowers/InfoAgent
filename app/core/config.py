@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     # Redis Cache
     REDIS_URL: str = "redis://localhost:6379"
 
+    # API Key Authentication
+    # When set, all /api/v1/* endpoints require X-API-Key header.
+    # Leave empty (default) to disable auth — convenient for local dev.
+    API_KEY: str | None = None
+
     # CORS
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",

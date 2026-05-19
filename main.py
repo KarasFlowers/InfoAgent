@@ -18,6 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.router import api_router
 from app.api.rag_router import rag_router
+from app.core.auth import APIKeyMiddleware
 from app.core.config import settings
 from app.core.db import init_db
 from app.core.logging_config import setup_logging, new_trace_id
@@ -47,6 +48,9 @@ async def lifespan(app: FastAPI):
 
     # Start APScheduler (handles periodic cleanup + future jobs)
     await start_scheduler()
+
+    # Pre-warm ChromaDB and load existing collections
+    rag_service.init_chroma()
 
     # Start background ingest workers
     worker_tasks: list[asyncio.Task] = []
@@ -97,6 +101,11 @@ class TraceIDMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(TraceIDMiddleware)
+
+# API Key authentication (inert when API_KEY is not set)
+if settings.API_KEY:
+    app.add_middleware(APIKeyMiddleware, api_key=settings.API_KEY)
+    logger.info("api_key_auth_enabled")
 
 # Set up CORS
 app.add_middleware(
