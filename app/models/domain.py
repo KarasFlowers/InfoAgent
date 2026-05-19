@@ -108,3 +108,19 @@ class UserPersona(SQLModel, table=True):
     source: str = Field(default="manual", sa_column=Column(Text, nullable=False, server_default="manual"))  # "manual" | "auto"
     last_refreshed: Optional[datetime] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class UserMemory(SQLModel, table=True):
+    """Persistent factual memory about the user for prompt enrichment.
+
+    Distinct from UserPersona: Persona = interest/keyword for filtering;
+    Memory = factual recall (preferences, context, history) for prompt injection.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(index=True, unique=True)  # e.g. "preferred_language", "last_research_topic"
+    value: str = Field(sa_column=Column(Text, nullable=False))
+    category: str = Field(default="fact", index=True)  # "fact" | "preference" | "topic"
+    source: str = Field(default="auto", sa_column=Column(Text, nullable=False, server_default="auto"))  # "manual" | "auto" | "chat_extract"
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: Optional[datetime] = Field(default=None)

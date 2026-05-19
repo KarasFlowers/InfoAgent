@@ -40,6 +40,10 @@ async def _ensure_legacy_columns(conn) -> None:
         await conn.exec_driver_sql("ALTER TABLE dailysummary ADD COLUMN stats_json VARCHAR")
     if "board_id" not in columns:
         await conn.exec_driver_sql("ALTER TABLE dailysummary ADD COLUMN board_id INTEGER")
+    if "perspective" not in columns:
+        await conn.exec_driver_sql("ALTER TABLE dailysummary ADD COLUMN perspective TEXT NOT NULL DEFAULT 'overview'")
+    # Fix any rows where perspective ended up as NULL
+    await conn.exec_driver_sql("UPDATE dailysummary SET perspective = 'overview' WHERE perspective IS NULL")
 
     persona_result = await conn.exec_driver_sql("PRAGMA table_info(userpersona)")
     persona_columns = {row[1] for row in persona_result.fetchall()}
@@ -57,6 +61,29 @@ async def _ensure_legacy_columns(conn) -> None:
     # Fix any rows where schedule/notify_channels ended up as NULL
     await conn.exec_driver_sql("UPDATE board SET schedule = '' WHERE schedule IS NULL")
     await conn.exec_driver_sql("UPDATE board SET notify_channels = '' WHERE notify_channels IS NULL")
+
+    # Board table: new columns added in refactor (perspectives, prompt_key)
+    if "perspectives" not in board_columns:
+        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN perspectives VARCHAR")
+    if "prompt_key" not in board_columns:
+        await conn.exec_driver_sql("ALTER TABLE board ADD COLUMN prompt_key TEXT NOT NULL DEFAULT 'daily_briefing'")
+    # Fix any rows where prompt_key ended up as NULL
+    await conn.exec_driver_sql("UPDATE board SET prompt_key = 'daily_briefing' WHERE prompt_key IS NULL")
+
+    # NewsItem: new column added in refactor (topic_path)
+    newsitem_result = await conn.exec_driver_sql("PRAGMA table_info(newsitem)")
+    newsitem_columns = {row[1] for row in newsitem_result.fetchall()}
+    if "topic_path" not in newsitem_columns:
+        await conn.exec_driver_sql("ALTER TABLE newsitem ADD COLUMN topic_path TEXT NOT NULL DEFAULT ''")
+    await conn.exec_driver_sql("UPDATE newsitem SET topic_path = '' WHERE topic_path IS NULL")
+
+    # UserPersona: new columns added in refactor (weight, source, last_refreshed)
+    if "weight" not in persona_columns:
+        await conn.exec_driver_sql("ALTER TABLE userpersona ADD COLUMN weight REAL NOT NULL DEFAULT 1.0")
+    if "source" not in persona_columns:
+        await conn.exec_driver_sql("ALTER TABLE userpersona ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+    if "last_refreshed" not in persona_columns:
+        await conn.exec_driver_sql("ALTER TABLE userpersona ADD COLUMN last_refreshed DATETIME")
 
 
 async def _migrate_dailysummary_date_uniqueness(conn) -> None:
@@ -78,13 +105,16 @@ async def _migrate_dailysummary_date_uniqueness(conn) -> None:
         if cols == ["date"] and not idx_name.startswith("sqlite_autoindex_"):
             await conn.exec_driver_sql(f"DROP INDEX IF EXISTS {idx_name}")
 
-    # Ensure composite uniqueness exists.
+    # Ensure composite uniqueness exists (with perspective).
+    # Drop the old 2-column index if it exists, then create the 3-column one.
     existing = {row[1] for row in (await conn.exec_driver_sql("PRAGMA index_list(dailysummary)")).fetchall()}
-    if "ux_dailysummary_board_date" not in existing:
+    if "ux_dailysummary_board_date" in existing:
+        await conn.exec_driver_sql("DROP INDEX IF EXISTS ux_dailysummary_board_date")
+    if "ux_dailysummary_board_date_perspective" not in existing:
         try:
             await conn.exec_driver_sql(
-                "CREATE UNIQUE INDEX ux_dailysummary_board_date "
-                "ON dailysummary(board_id, date)"
+                "CREATE UNIQUE INDEX ux_dailysummary_board_date_perspective "
+                "ON dailysummary(board_id, date, perspective)"
             )
         except Exception:
             # If pre-existing data violates the constraint (shouldn't in fresh installs),
@@ -224,6 +254,84 @@ async def _migrate_json_columns(conn) -> None:
         except (_json.JSONDecodeError, TypeError):
             pass
 
+    # --- Board.source_config ---
+    rows = await conn.exec_driver_sql(
+        "SELECT id, source_config FROM board WHERE typeof(source_config) = 'text'"
+    )
+    for row in rows.fetchall():
+        rid, raw = row
+        try:
+            parsed = _json.loads(raw)
+            if not isinstance(parsed, dict):
+                parsed = {}
+            await conn.exec_driver_sql(
+                "UPDATE board SET source_config = ? WHERE id = ?",
+                (_json.dumps(parsed, ensure_ascii=False), rid),
+            )
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+
+async def _migrate_phase2_schema(conn) -> None:
+    """
+    Phase 2 schema migration: add perspective, topic_path, and new
+    Board / UserPersona columns. Idempotent — uses IF NOT EXISTS / checks.
+    """
+    # --- DailySummary.perspective ---
+    cols = await conn.exec_driver_sql("PRAGMA table_info(dailysummary)")
+    col_names = {row[1] for row in cols.fetchall()}
+    if "perspective" not in col_names:
+        await conn.exec_driver_sql(
+            "ALTER TABLE dailysummary ADD COLUMN perspective TEXT NOT NULL DEFAULT 'overview'"
+        )
+
+    # Update unique constraint: drop old, create new (board_id, date, perspective)
+    indexes = await conn.exec_driver_sql("PRAGMA index_list(dailysummary)")
+    existing_indexes = {row[1] for row in indexes.fetchall()}
+    if "ux_dailysummary_board_date" in existing_indexes:
+        await conn.exec_driver_sql("DROP INDEX IF EXISTS ux_dailysummary_board_date")
+    if "ux_dailysummary_board_date_perspective" not in existing_indexes:
+        await conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX ux_dailysummary_board_date_perspective "
+            "ON dailysummary(board_id, date, perspective)"
+        )
+
+    # --- NewsItem.topic_path ---
+    cols = await conn.exec_driver_sql("PRAGMA table_info(newsitem)")
+    col_names = {row[1] for row in cols.fetchall()}
+    if "topic_path" not in col_names:
+        await conn.exec_driver_sql(
+            "ALTER TABLE newsitem ADD COLUMN topic_path TEXT NOT NULL DEFAULT ''"
+        )
+
+    # --- Board.perspectives & prompt_key ---
+    cols = await conn.exec_driver_sql("PRAGMA table_info(board)")
+    col_names = {row[1] for row in cols.fetchall()}
+    if "perspectives" not in col_names:
+        await conn.exec_driver_sql(
+            "ALTER TABLE board ADD COLUMN perspectives JSON"
+        )
+    if "prompt_key" not in col_names:
+        await conn.exec_driver_sql(
+            "ALTER TABLE board ADD COLUMN prompt_key TEXT NOT NULL DEFAULT 'daily_briefing'"
+        )
+
+    # --- UserPersona.weight / source / last_refreshed ---
+    cols = await conn.exec_driver_sql("PRAGMA table_info(userpersona)")
+    col_names = {row[1] for row in cols.fetchall()}
+    if "weight" not in col_names:
+        await conn.exec_driver_sql(
+            "ALTER TABLE userpersona ADD COLUMN weight REAL NOT NULL DEFAULT 1.0"
+        )
+    if "source" not in col_names:
+        await conn.exec_driver_sql(
+            "ALTER TABLE userpersona ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'"
+        )
+    if "last_refreshed" not in col_names:
+        await conn.exec_driver_sql(
+            "ALTER TABLE userpersona ADD COLUMN last_refreshed TIMESTAMP"
+        )
+
 
 async def init_db():
     """Create the database tables if they don't exist."""
@@ -236,6 +344,7 @@ async def init_db():
             UserFeedback,
             ChatMessage,
             UserPersona,
+            UserMemory,
             ArticleOverview,
         )
         await conn.run_sync(SQLModel.metadata.create_all)
@@ -244,6 +353,7 @@ async def init_db():
         await _seed_default_board(conn)
         await _ensure_feedback_uniqueness(conn)
         await _migrate_json_columns(conn)
+        await _migrate_phase2_schema(conn)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
