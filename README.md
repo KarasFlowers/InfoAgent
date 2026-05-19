@@ -131,6 +131,7 @@ Copy `.env.template` to `.env` and configure your settings. At minimum, you need
 | `LLM_TIMEOUT` | No | `180` | Request timeout in seconds |
 | `LLM_MAX_RETRIES` | No | `1` | Max retries on transient failures |
 | `DEEPSEEK_API_KEY` | No | - | Legacy alias — used as fallback when `LLM_API_KEY` is unset |
+| `API_KEY` | No | - | API key for authenticating `/api/v1/*` requests (via `X-API-Key` header). Unset = no auth |
 | `SQLALCHEMY_DATABASE_URI` | No | `sqlite+aiosqlite:///./data/sqlite/argos.db` | Async SQLite database path |
 | `CHROMA_DB_DIR` | No | `./data/chroma` | ChromaDB persistent storage path |
 | `CORS_ORIGINS` | No | `http://localhost:5173,...` | Comma-separated allowed frontend origins |
@@ -166,6 +167,8 @@ Each board has a `source_type` that determines how content is fetched:
 ## MCP Server (AI Agent Integration)
 
 Argos exposes its capabilities as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, allowing AI assistants like Claude, Cursor, and Windsurf to directly query your briefings, ask RAG questions, and manage preferences.
+
+> ⚠️ **SQLite limitation**: Do NOT run the MCP Server alongside the FastAPI web server when using the default SQLite database. Both processes share the same SQLite file, and concurrent writes may cause `database is locked` errors or data corruption. Stop the web server first, or switch to PostgreSQL for concurrent access.
 
 ### Available Tools
 

@@ -131,6 +131,7 @@ uvicorn main:app --reload
 | `LLM_TIMEOUT` | 否 | `180` | 请求超时（秒） |
 | `LLM_MAX_RETRIES` | 否 | `1` | 瞬态失败最大重试次数 |
 | `DEEPSEEK_API_KEY` | 否 | - | 旧版别名 — 当 `LLM_API_KEY` 未设置时作为回退 |
+| `API_KEY` | 否 | - | API 认证密钥，设置后所有 `/api/v1/*` 请求需携带 `X-API-Key` 请求头。不设置则无需认证 |
 | `SQLALCHEMY_DATABASE_URI` | 否 | `sqlite+aiosqlite:///./data/sqlite/argos.db` | 异步 SQLite 数据库路径 |
 | `CHROMA_DB_DIR` | 否 | `./data/chroma` | ChromaDB 持久化存储路径 |
 | `CORS_ORIGINS` | 否 | `http://localhost:5173,...` | 逗号分隔的前端允许来源 |
@@ -166,6 +167,8 @@ uvicorn main:app --reload
 ## MCP Server（AI 助手集成）
 
 Argos 通过 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) 协议暴露核心能力，让 Claude、Cursor、Windsurf 等 AI 助手可以直接查询简报、提问文章、管理偏好。
+
+> ⚠️ **SQLite 限制**：使用默认 SQLite 数据库时，**不要**同时运行 MCP Server 和 FastAPI Web 服务器。两个进程共享同一 SQLite 文件，并发写入可能导致 `database is locked` 错误或数据损坏。请先停止 Web 服务器，或切换到 PostgreSQL 以支持并发访问。
 
 ### 可用工具
 
