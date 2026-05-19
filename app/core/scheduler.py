@@ -89,6 +89,42 @@ def _run_daily_push() -> None:
         logger.exception("Scheduled daily push failed")
 
 
+def _run_auto_extract_interests() -> None:
+    """Synchronous wrapper — auto-extract interests from feedback."""
+    try:
+        asyncio.run(_async_auto_extract_interests())
+    except Exception:
+        logger.exception("Scheduled auto-extract interests failed")
+
+
+async def _async_auto_extract_interests() -> None:
+    from app.core.db import AsyncSessionLocal
+    from app.services.learning_service import auto_extract_interests
+
+    async with AsyncSessionLocal() as session:
+        count = await auto_extract_interests(session)
+        if count > 0:
+            logger.info("Auto-extracted %d new interests from feedback", count)
+
+
+def _run_auto_extract_memories() -> None:
+    """Synchronous wrapper — auto-extract user memories from chat history."""
+    try:
+        asyncio.run(_async_auto_extract_memories())
+    except Exception:
+        logger.exception("Scheduled auto-extract memories failed")
+
+
+async def _async_auto_extract_memories() -> None:
+    from app.core.db import AsyncSessionLocal
+    from app.services.memory_service import auto_extract_memories
+
+    async with AsyncSessionLocal() as session:
+        count = await auto_extract_memories(session)
+        if count > 0:
+            logger.info("Auto-extracted %d new memories from chat", count)
+
+
 async def _async_push_boards(
     slugs: Optional[List[str]] = None,
     only_global: bool = False,
@@ -261,7 +297,25 @@ async def start_scheduler() -> None:
     except ValueError:
         logger.error("Invalid DAILY_PUSH_TIME format: %s. Expected HH:MM.", settings.DAILY_PUSH_TIME)
 
-    # 3. Per-board schedules (async — reads from DB)
+    # 3. Auto Interest Extraction (every 12 hours)
+    _scheduler.add_job(
+        _run_auto_extract_interests,
+        trigger=IntervalTrigger(hours=12),
+        id="auto_extract_interests",
+        name="Auto-extract long-term interests from feedback",
+        replace_existing=True,
+    )
+
+    # 4. Auto Memory Extraction (every 6 hours)
+    _scheduler.add_job(
+        _run_auto_extract_memories,
+        trigger=IntervalTrigger(hours=6),
+        id="auto_extract_memories",
+        name="Auto-extract user memories from chat history",
+        replace_existing=True,
+    )
+
+    # 5. Per-board schedules (async — reads from DB)
     await _register_board_schedules()
 
     _scheduler.start()
