@@ -12,6 +12,12 @@ allowing AI assistants (Claude, Cursor, Windsurf, etc.) to:
 Run standalone:
     python mcp_server.py            # stdio transport (default for IDE integrations)
     python mcp_server.py --http     # HTTP transport for remote access
+
+**Important**: Do NOT run the MCP Server alongside the FastAPI web server
+when using the default SQLite database.  Both processes share the same
+SQLite file and concurrent writes will cause ``database is locked``
+errors or data corruption.  Stop the web server first, or switch to
+PostgreSQL for production use.
 """
 from __future__ import annotations
 
@@ -22,6 +28,37 @@ from datetime import datetime
 from typing import Optional
 
 from fastmcp import FastMCP
+
+# ---------------------------------------------------------------------------
+# Startup guard: warn if FastAPI web server is already running
+# ---------------------------------------------------------------------------
+
+def _check_web_server_running() -> None:
+    """Detect whether the Argos FastAPI server is already listening on port 8000.
+
+    If it is, print a warning because both processes share the same SQLite
+    database and concurrent writes are unsafe.
+    """
+    import socket
+    import logging
+
+    host = "127.0.0.1"
+    port = 8000
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            pass  # port is open → server likely running
+        logging.warning(
+            "⚠  FastAPI server detected on %s:%d. "
+            "Running MCP Server alongside the web server with SQLite may cause "
+            "'database is locked' errors or data corruption. "
+            "Please stop the web server first, or switch to PostgreSQL.",
+            host, port,
+        )
+    except (ConnectionRefusedError, OSError, TimeoutError):
+        pass  # port not open → safe to proceed
+
+
+_check_web_server_running()
 
 # ---------------------------------------------------------------------------
 # FastMCP app
