@@ -18,6 +18,7 @@ const ICONS = {
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
+    _initTheme();
     await initBoards();
     // Try to render cached data immediately, then refresh in background
     const cached = _loadCachedSummary();
@@ -28,6 +29,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRagPanel();
     setupHistoryPanel();
 });
+
+function _initTheme() {
+    let saved = null;
+    try { saved = localStorage.getItem('argos-theme'); } catch (_) {}
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const isLight = saved ? saved === 'light' : !prefersDark;
+    if (isLight) {
+        document.body.classList.add('light-mode');
+    }
+    _updateThemeIcon();
+}
+
+function toggleTheme() {
+    const isLight = document.body.classList.toggle('light-mode');
+    try { localStorage.setItem('argos-theme', isLight ? 'light' : 'dark'); } catch (_) {}
+    _updateThemeIcon();
+}
+
+function _updateThemeIcon() {
+    const isLight = document.body.classList.contains('light-mode');
+    const sun = document.getElementById('theme-icon-sun');
+    const moon = document.getElementById('theme-icon-moon');
+    if (sun) sun.style.display = isLight ? 'none' : 'inline-block';
+    if (moon) moon.style.display = isLight ? 'inline-block' : 'none';
+}
 
 function clearElement(element) {
     if (!element) return;
@@ -526,16 +552,12 @@ function renderHome() {
     const container = document.getElementById('news-container');
     const overviewSection = document.querySelector('.overview-section');
     const viewControls = document.getElementById('view-controls');
-    const statsContainer = document.getElementById('stats-container');
-    const categoryNav = document.getElementById('category-nav');
 
     if (!latestData) return;
 
     clearElement(container);
     container.className = 'news-grid dashboard';
     overviewSection.style.display = 'block';
-    statsContainer.style.display = 'flex';
-    categoryNav.style.display = 'flex';
     viewControls.style.display = 'none';
 
     renderSourceStats(latestData.source_stats || computeSourceStats(latestData.top_news));
@@ -568,6 +590,7 @@ function updateFeedbackStateInData(url, sentiment) {
 function renderCategoryNav() {
     const nav = document.getElementById('category-nav');
     clearElement(nav);
+    if (nav) nav.style.display = 'flex';
 
     if (!latestData || !latestData.top_news) return;
 
@@ -725,14 +748,10 @@ function renderCategoryDetail(categoryName) {
     const container = document.getElementById('news-container');
     const overviewSection = document.querySelector('.overview-section');
     const viewControls = document.getElementById('view-controls');
-    const statsContainer = document.getElementById('stats-container');
-    const categoryNav = document.getElementById('category-nav');
 
     clearElement(container);
     container.className = 'news-grid';
     overviewSection.style.display = 'none';
-    statsContainer.style.display = 'none';
-    categoryNav.style.display = 'none';
     viewControls.style.display = 'flex';
 
     const detailHeader = document.createElement('div');
@@ -2218,6 +2237,15 @@ function renderEntityTimeline(data, container) {
 }
 
 // ==========================================
+// Stats Panel
+// ==========================================
+
+function toggleStatsPanel() {
+    const modal = document.getElementById('stats-modal');
+    if (!modal) return;
+    modal.classList.toggle('active');
+}
+
 // Sources Management Panel
 // ==========================================
 
