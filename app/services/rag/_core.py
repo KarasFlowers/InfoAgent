@@ -57,7 +57,17 @@ def _get_chroma_client() -> chromadb.PersistentClient:
     """Return the shared ChromaDB PersistentClient, creating it on first call."""
     global _chroma_client
     if _chroma_client is None:
-        _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_DIR)
+        try:
+            _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_DIR)
+        except KeyError:
+            # Workaround for ChromaDB 0.5.x bug: SharedSystemClient can
+            # leave its _identifier_to_system cache in an inconsistent state,
+            # causing a KeyError on the return path.  Clearing the cache and
+            # retrying resolves the issue.
+            logger.warning("ChromaDB SharedSystemClient cache inconsistency detected, retrying")
+            from chromadb.api.shared_system_client import SharedSystemClient
+            SharedSystemClient.clear_system_cache()
+            _chroma_client = chromadb.PersistentClient(path=settings.CHROMA_DB_DIR)
         logger.info("ChromaDB PersistentClient initialised at %s", settings.CHROMA_DB_DIR)
     return _chroma_client
 

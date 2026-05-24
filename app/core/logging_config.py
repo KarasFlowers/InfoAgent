@@ -69,7 +69,10 @@ def setup_logging(*, json_output: bool | None = None) -> None:
             ensure_ascii=False,
         )
     else:
-        renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
+        renderer = structlog.dev.ConsoleRenderer(
+            colors=sys.stderr.isatty(),
+            pad_level=False,
+        )
 
     structlog.configure(
         processors=[

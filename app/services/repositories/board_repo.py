@@ -45,6 +45,10 @@ class BoardRepo:
         source_type: str = "rss",
         source_config: dict | None = None,
         display_order: int = 0,
+        schedule: str = "",
+        notify_channels: str = "",
+        perspectives: dict | None = None,
+        prompt_key: str = "daily_briefing",
     ) -> Board:
         board = Board(
             slug=slug,
@@ -55,6 +59,10 @@ class BoardRepo:
             source_type=source_type,
             source_config=source_config,
             display_order=display_order,
+            schedule=schedule,
+            notify_channels=notify_channels,
+            perspectives=perspectives,
+            prompt_key=prompt_key,
         )
         session.add(board)
         await session.commit()
@@ -70,6 +78,7 @@ class BoardRepo:
         allowed = {
             "name", "icon", "description", "system_prompt",
             "source_type", "source_config", "display_order", "is_active",
+            "schedule", "notify_channels", "perspectives", "prompt_key"
         }
         for key, value in updates.items():
             if key in allowed and value is not None:
