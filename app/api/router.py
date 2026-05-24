@@ -207,6 +207,66 @@ async def ping():
     return {"status": "ok", "message": "pong"}
 
 
+@api_router.get("/admin/tasks")
+async def list_task_runs(
+    kind: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+):
+    """List recent background task runs for observability."""
+    from sqlalchemy import select, desc
+    from app.models.domain import TaskRun
+
+    stmt = select(TaskRun).order_by(desc(TaskRun.id))
+    if kind:
+        stmt = stmt.where(TaskRun.kind == kind)
+    if status:
+        stmt = stmt.where(TaskRun.status == status)
+    stmt = stmt.limit(limit)
+
+    result = await session.execute(stmt)
+    tasks = result.scalars().all()
+
+    return [
+        {
+            "id": t.id,
+            "kind": t.kind,
+            "trigger_type": t.trigger_type,
+            "status": t.status,
+            "progress_label": t.progress_label,
+            "progress_current": t.progress_current,
+            "progress_total": t.progress_total,
+            "stage_timings": t.stage_timings,
+            "ai_call_breakdown": t.ai_call_breakdown,
+            "error_summary": t.error_summary,
+            "board_id": t.board_id,
+            "started_at": t.started_at.isoformat() if t.started_at else None,
+            "finished_at": t.finished_at.isoformat() if t.finished_at else None,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in tasks
+    ]
+
+
+@api_router.get("/admin/sources/health")
+async def list_source_health(session: AsyncSession = Depends(get_session)):
+    """List all sources with their current health status."""
+    from app.services.source_health_service import get_all_source_health
+    return await get_all_source_health(session)
+
+
+@api_router.get("/admin/sources/{source_id}/health_log")
+async def get_source_health_log_endpoint(
+    source_id: int,
+    limit: int = Query(default=20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get recent health check log for a specific source."""
+    from app.services.source_health_service import get_source_health_log
+    return await get_source_health_log(session, source_id, limit=limit)
+
+
 @api_router.get("/feeds", response_model=list[RSSResponse])
 async def manually_trigger_rss_fetch():
     """
@@ -422,6 +482,176 @@ async def generate_summary(
         except Exception:
             logger.debug("Persona reranking skipped for fresh summary")
         return final
+
+
+@api_router.get("/briefing")
+async def get_daily_briefing(
+    date: Optional[str] = None,
+    board: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Structured daily briefing — richer than /summary.
+
+    Returns grouped news with cluster info, source stats, and pipeline metadata.
+    If no summary exists for the date, returns 404.
+    """
+    search_date = date or datetime.now().strftime("%Y-%m-%d")
+    board_obj = await _resolve_board(session, board)
+    board_id = board_obj.id if board_obj else None
+
+    existing = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"No briefing found for {search_date}.")
+
+    # Group items by category for sectioned output
+    sections: dict[str, list] = {}
+    for item in existing.top_news:
+        cat = item.category or "general"
+        sections.setdefault(cat, []).append({
+            "headline": item.headline,
+            "key_points": item.key_points,
+            "tags": item.tags,
+            "topic_path": getattr(item, "topic_path", ""),
+            "original_link": item.original_link,
+            "source": item.source,
+        })
+
+    # Fetch clusters for this board
+    clusters = []
+    try:
+        from app.services.clustering_service import get_clusters_for_board
+        cluster_rows = await get_clusters_for_board(session, board_id=board_id, limit=10)
+        clusters = [
+            {"title": c.title, "item_count": c.item_count, "summary": c.summary}
+            for c in cluster_rows
+        ]
+    except Exception:
+        pass  # clustering not yet populated — graceful skip
+
+    return {
+        "date": existing.date,
+        "board": board_obj.slug if board_obj else "default",
+        "overview": existing.overview,
+        "perspective": existing.perspective,
+        "sections": sections,
+        "clusters": clusters,
+        "source_stats": existing.stats_json or {},
+        "recommendation_report": {},
+        "total_items": len(existing.top_news),
+        "section_count": len(sections),
+    }
+
+
+class RefineRequest(BaseModel):
+    date: Optional[str] = None
+    board: Optional[str] = None
+    instruction: str = Field(min_length=1, max_length=2000)
+
+
+@api_router.post("/briefing/refine")
+async def refine_daily_briefing(
+    payload: RefineRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Refine an existing daily briefing with a user instruction.
+
+    Creates a DailyReportRefinementSession, re-runs LLM with the instruction
+    injected into persona context, and stores the refined output.
+    """
+    from datetime import UTC
+    from app.models.domain import DailyReportRefinementSession
+
+    search_date = payload.date or datetime.now().strftime("%Y-%m-%d")
+    board_obj = await _resolve_board(session, payload.board)
+    board_id = board_obj.id if board_obj else None
+
+    # 1. Load existing summary
+    existing = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"No summary found for {search_date} to refine.")
+
+    # 2. Create refinement session
+    rs = DailyReportRefinementSession(
+        board_id=board_id,
+        date=search_date,
+        instruction=payload.instruction,
+        original_summary_json=existing.model_dump(mode="json"),
+        status="processing",
+    )
+    session.add(rs)
+    await session.commit()
+    await session.refresh(rs)
+    session_id = rs.id
+
+    # 3. Re-generate with instruction injected
+    try:
+        # Rebuild ContentItems from existing top_news so the pipeline has content to work with
+        from app.models.schemas import ContentItem as CI
+        rebuilt_items = [
+            CI(
+                id=f"rss:refine:{n.id}",
+                source_type="rss",
+                title=n.headline,
+                url=n.original_link,
+                source=n.source,
+            )
+            for n in existing.top_news
+        ]
+
+        refined, _ = await llm_service.generate_daily_summary_from_items(
+            content_items=rebuilt_items,
+            session=session,
+            board=board_obj,
+            one_time_preference=payload.instruction,
+        )
+
+        if refined:
+            rs.refined_summary_json = refined.model_dump(mode="json")
+            rs.status = "done"
+        else:
+            rs.status = "failed"
+            rs.error_message = "LLM returned no output"
+    except Exception as exc:
+        rs.status = "failed"
+        rs.error_message = str(exc)[:500]
+
+    rs.finished_at = datetime.now(UTC)
+    await session.commit()
+
+    return {
+        "session_id": session_id,
+        "status": rs.status,
+        "refined_summary": rs.refined_summary_json,
+        "error": rs.error_message or None,
+    }
+
+
+@api_router.get("/briefing/refine/{session_id}")
+async def get_refinement_session(
+    session_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Retrieve a refinement session result."""
+    from sqlalchemy import select
+    from app.models.domain import DailyReportRefinementSession
+
+    stmt = select(DailyReportRefinementSession).where(DailyReportRefinementSession.id == session_id)
+    result = await session.execute(stmt)
+    rs = result.scalar_one_or_none()
+    if not rs:
+        raise HTTPException(status_code=404, detail="Refinement session not found.")
+
+    return {
+        "session_id": rs.id,
+        "board_id": rs.board_id,
+        "date": rs.date,
+        "instruction": rs.instruction,
+        "status": rs.status,
+        "refined_summary": rs.refined_summary_json,
+        "error": rs.error_message or None,
+        "created_at": rs.created_at.isoformat() if rs.created_at else None,
+        "finished_at": rs.finished_at.isoformat() if rs.finished_at else None,
+    }
 
 
 @api_router.get("/persona")
