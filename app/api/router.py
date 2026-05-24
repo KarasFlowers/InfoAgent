@@ -36,6 +36,10 @@ class BoardCreateRequest(BaseModel):
     source_type: str = Field(default="rss", max_length=32)
     source_config: dict = Field(default_factory=dict)
     display_order: int = Field(default=0)
+    schedule: str = Field(default="")
+    notify_channels: str = Field(default="")
+    perspectives: Optional[dict] = None
+    prompt_key: str = Field(default="daily_briefing")
 
 
 class BoardUpdateRequest(BaseModel):
@@ -47,6 +51,10 @@ class BoardUpdateRequest(BaseModel):
     source_config: Optional[dict] = None
     display_order: Optional[int] = None
     is_active: Optional[bool] = None
+    schedule: Optional[str] = None
+    notify_channels: Optional[str] = None
+    perspectives: Optional[dict] = None
+    prompt_key: Optional[str] = None
 
 
 class BoardWizardMessage(BaseModel):
@@ -790,6 +798,8 @@ def _serialize_board(board) -> dict:
         "source_config": board.source_config or {},
         "perspectives": board.perspectives or {},
         "prompt_key": board.prompt_key or "daily_briefing",
+        "schedule": board.schedule or "",
+        "notify_channels": board.notify_channels or "",
         "display_order": board.display_order,
         "is_active": board.is_active,
         "is_default": board.is_default,
@@ -839,6 +849,10 @@ async def create_board(
         source_type=payload.source_type,
         source_config=payload.source_config,
         display_order=payload.display_order,
+        schedule=payload.schedule,
+        notify_channels=payload.notify_channels,
+        perspectives=payload.perspectives,
+        prompt_key=payload.prompt_key,
     )
     return _serialize_board(board)
 
@@ -854,6 +868,22 @@ async def board_wizard(payload: BoardWizardRequest):
     )
     return result
 
+
+@api_router.get("/boards/prompts/templates")
+async def list_prompt_templates():
+    """List available prompt templates from the prompts directory."""
+    import os
+    from pathlib import Path
+    
+    prompts_dir = Path(__file__).parent.parent / "prompts"
+    templates = []
+    
+    if prompts_dir.exists():
+        for file in prompts_dir.glob("*.md"):
+            if file.is_file():
+                templates.append(file.stem)
+                
+    return {"templates": sorted(templates)}
 
 @api_router.get("/boards/{slug}")
 async def get_board(slug: str, session: AsyncSession = Depends(get_session)):
@@ -873,6 +903,36 @@ async def get_board_perspectives(slug: str, session: AsyncSession = Depends(get_
     perspectives_data = board.perspectives or {}
     active = perspectives_data.get("active", ["overview"])
     return {"perspectives": active, "default": active[0] if active else "overview"}
+
+
+@api_router.post("/boards/{slug}/preview")
+async def preview_board(slug: str, session: AsyncSession = Depends(get_session)):
+    """
+    Run the source adapter and LLM generation for a board without saving to the DB.
+    Returns the generated DailySummaryResponse.
+    """
+    board = await db_service.get_board_by_slug(session, slug)
+    if not board:
+        raise HTTPException(status_code=404, detail=f"Board '{slug}' not found.")
+        
+    if not board.is_active:
+        raise HTTPException(status_code=400, detail="Cannot preview an inactive board.")
+        
+    from app.services.source_adapters import get_adapter, UnknownSourceTypeError
+    try:
+        adapter = get_adapter(board.source_type)
+    except UnknownSourceTypeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    try:
+        # Run the adapter. Most adapters will generate the summary.
+        # We don't save the result to the database because we don't invoke db_service.save_summary.
+        summary_resp, _ = await adapter.produce(board, session)
+        if not summary_resp:
+            raise HTTPException(status_code=500, detail="Adapter returned no content for preview.")
+        return summary_resp
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview failed: {str(e)}")
 
 
 @api_router.patch("/boards/{slug}")
