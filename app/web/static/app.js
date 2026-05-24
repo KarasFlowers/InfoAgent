@@ -6,6 +6,7 @@ let currentOverviewController = null;
 let latestHistoryArchive = [];
 let currentBoardSlug = null;
 let availableBoards = [];
+let availablePromptTemplates = [];
 
 const SUMMARY_LOADING_TEXT = 'AI 编辑正在努力生成今日简报，这可能需要几十秒...';
 const SUMMARY_CACHE_KEY = 'argos_summary_cache';
@@ -20,6 +21,7 @@ const ICONS = {
 document.addEventListener('DOMContentLoaded', async () => {
     _initTheme();
     await initBoards();
+    await loadPromptTemplates();
     // Try to render cached data immediately, then refresh in background
     const cached = _loadCachedSummary();
     if (cached) {
@@ -263,11 +265,24 @@ async function submitWizard(event) {
             wizardLastConfig = data.config;
             // Summary preview
             const cfg = data.config;
+            const typeLabels = { rss: 'RSS 订阅源', pure_llm: '纯 LLM 生成', hackernews: 'Hacker News', reddit: 'Reddit', github: 'GitHub', multi: '混合数据源' };
+            const sc = cfg.source_config || {};
+            let sourceDetail = '';
+            if (cfg.source_type === 'rss' && sc.feeds && sc.feeds.length > 0) {
+                sourceDetail = `- 源：\n${sc.feeds.map(u => '  - ' + u).join('\n')}`;
+            } else if (cfg.source_type === 'reddit' && sc.subreddits) {
+                sourceDetail = `- Subreddits: ${sc.subreddits.map(s => s.subreddit || s).join(', ')}`;
+            } else if (cfg.source_type === 'github') {
+                const parts = [];
+                if (sc.repos) parts.push(`repos: ${sc.repos.map(r => r.owner + '/' + r.repo).join(', ')}`);
+                if (sc.users) parts.push(`users: ${sc.users.join(', ')}`);
+                if (parts.length) sourceDetail = `- ${parts.join('; ')}`;
+            }
             const preview = `**推荐配置：**
 - 名称：${cfg.icon} ${cfg.name}
 - 标识：\`${cfg.slug}\`
-- 类型：${cfg.source_type === 'rss' ? 'RSS 订阅源' : '纯 LLM 生成'}
-${cfg.source_type === 'rss' && cfg.rss_urls.length > 0 ? `- 源：\n${cfg.rss_urls.map(u => '  - ' + u).join('\n')}` : ''}`;
+- 类型：${typeLabels[cfg.source_type] || cfg.source_type}
+${sourceDetail}`;
             appendWizardMsg('ai', preview);
             document.getElementById('wizard-apply-row').style.display = 'flex';
         } else {
@@ -294,13 +309,71 @@ function applyWizardConfig() {
     document.getElementById('board-icon').value = cfg.icon || '📌';
     document.getElementById('board-source-type').value = cfg.source_type || 'rss';
     document.getElementById('board-prompt').value = cfg.system_prompt || '';
-    if (cfg.source_type === 'rss' && cfg.rss_urls) {
-        document.getElementById('board-rss-urls').value = cfg.rss_urls.join('\n');
-    } else {
-        document.getElementById('board-rss-urls').value = '';
-    }
+    
+    if (cfg.schedule) document.getElementById('board-schedule').value = cfg.schedule;
+    if (cfg.notify_channels) document.getElementById('board-notify').value = cfg.notify_channels;
+    
+    _populateSourceConfigForm(cfg.source_type, cfg.source_config || {});
     toggleBoardSourceConfig();
     switchBoardMode('manual');
+}
+
+function _populateSourceConfigForm(sourceType, sc) {
+    // Reset all config fields
+    const feedsEl = document.getElementById('board-rss-feeds');
+    if (feedsEl) feedsEl.value = '';
+    const llmItems = document.getElementById('board-llm-items');
+    if (llmItems) llmItems.value = '5';
+    const llmStyle = document.getElementById('board-llm-style');
+    if (llmStyle) llmStyle.value = '';
+    const hnTop = document.getElementById('board-hn-top');
+    if (hnTop) hnTop.value = '30';
+    const hnScore = document.getElementById('board-hn-score');
+    if (hnScore) hnScore.value = '100';
+    const redditSubs = document.getElementById('board-reddit-subs');
+    if (redditSubs) redditSubs.value = '';
+    const redditComments = document.getElementById('board-reddit-comments');
+    if (redditComments) redditComments.value = '5';
+    const ghRepos = document.getElementById('board-github-repos');
+    if (ghRepos) ghRepos.value = '';
+    const ghUsers = document.getElementById('board-github-users');
+    if (ghUsers) ghUsers.value = '';
+    const multiJson = document.getElementById('board-multi-json');
+    if (multiJson) multiJson.value = '';
+
+    if (!sc) return;
+
+    switch (sourceType) {
+        case 'rss':
+            if (sc.feeds && feedsEl) feedsEl.value = sc.feeds.join('\n');
+            break;
+        case 'pure_llm':
+            if (sc.items_per_day && llmItems) llmItems.value = sc.items_per_day;
+            if (sc.style && llmStyle) llmStyle.value = sc.style;
+            break;
+        case 'hackernews':
+            if (sc.fetch_top_stories && hnTop) hnTop.value = sc.fetch_top_stories;
+            if (sc.min_score !== undefined && hnScore) hnScore.value = sc.min_score;
+            break;
+        case 'reddit':
+            if (sc.subreddits && redditSubs) {
+                redditSubs.value = sc.subreddits.map(s => {
+                    const parts = [s.subreddit || s];
+                    if (s.sort) parts.push(s.sort);
+                    if (s.min_score) parts.push(s.min_score);
+                    return parts.join(' ');
+                }).join('\n');
+            }
+            if (sc.fetch_comments !== undefined && redditComments) redditComments.value = sc.fetch_comments;
+            break;
+        case 'github':
+            if (sc.repos && ghRepos) ghRepos.value = sc.repos.map(r => `${r.owner}/${r.repo}`).join('\n');
+            if (sc.users && ghUsers) ghUsers.value = sc.users.join('\n');
+            break;
+        case 'multi':
+            if (multiJson) multiJson.value = JSON.stringify(sc.sources || sc, null, 2);
+            break;
+    }
 }
 
 function openBoardModal(slug = null) {
@@ -309,12 +382,17 @@ function openBoardModal(slug = null) {
     const title = document.getElementById('board-modal-title');
     const isEditInput = document.getElementById('board-is-edit');
     const deleteBtn = document.getElementById('board-delete-btn');
+    const previewBtn = document.getElementById('board-preview-btn');
     const originalSlugInput = document.getElementById('board-original-slug');
     const modeTabs = document.getElementById('board-mode-tabs');
+    const previewResult = document.getElementById('board-preview-result');
     
     // reset form and wizard state
     document.getElementById('board-form').reset();
-    document.getElementById('board-rss-group').style.display = 'block';
+    document.getElementById('board-advanced-settings').style.display = 'none';
+    if (previewResult) previewResult.style.display = 'none';
+    const toggleBtn = document.querySelector('.section-toggle-btn');
+    if (toggleBtn) toggleBtn.classList.remove('open');
     resetWizard();
 
     if (slug) {
@@ -323,6 +401,7 @@ function openBoardModal(slug = null) {
         isEditInput.value = 'true';
         originalSlugInput.value = slug;
         deleteBtn.style.display = 'inline-block';
+        previewBtn.style.display = 'inline-block';
         modeTabs.style.display = 'none';
         switchBoardMode('manual');
         
@@ -334,11 +413,18 @@ function openBoardModal(slug = null) {
             document.getElementById('board-icon').value = b.icon;
             document.getElementById('board-source-type').value = b.source_type || 'rss';
             document.getElementById('board-prompt').value = b.system_prompt || '';
+            document.getElementById('board-prompt-key').value = b.prompt_key || 'daily_briefing';
+            document.getElementById('board-schedule').value = b.schedule || '';
+            document.getElementById('board-notify').value = b.notify_channels || '';
             
-            if (b.source_type === 'rss') {
-                const urls = b.source_config?.rss_urls || [];
-                document.getElementById('board-rss-urls').value = urls.join('\n');
+            const perspectives = b.perspectives || {};
+            if (Object.keys(perspectives).length > 0) {
+                document.getElementById('board-perspectives').value = JSON.stringify(perspectives);
+            } else {
+                document.getElementById('board-perspectives').value = '';
             }
+
+            _populateSourceConfigForm(b.source_type, b.source_config || {});
             toggleBoardSourceConfig();
             
             if (b.is_default) {
@@ -351,6 +437,7 @@ function openBoardModal(slug = null) {
         isEditInput.value = 'false';
         originalSlugInput.value = '';
         deleteBtn.style.display = 'none';
+        previewBtn.style.display = 'none';
         modeTabs.style.display = 'flex';
         document.getElementById('board-slug').disabled = false;
         document.getElementById('board-source-type').value = 'rss';
@@ -368,11 +455,67 @@ function closeBoardModal() {
 
 function toggleBoardSourceConfig() {
     const type = document.getElementById('board-source-type').value;
-    const rssGroup = document.getElementById('board-rss-group');
-    if (type === 'rss') {
-        rssGroup.style.display = 'block';
-    } else {
-        rssGroup.style.display = 'none';
+    document.querySelectorAll('.board-source-config').forEach(el => {
+        el.style.display = 'none';
+    });
+    const panel = document.getElementById('board-cfg-' + type);
+    if (panel) panel.style.display = 'block';
+}
+
+function _collectSourceConfig(sourceType) {
+    switch (sourceType) {
+        case 'rss': {
+            const raw = document.getElementById('board-rss-feeds').value;
+            const feeds = raw.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+            return { feeds };
+        }
+        case 'pure_llm': {
+            const items = parseInt(document.getElementById('board-llm-items').value) || 5;
+            const style = document.getElementById('board-llm-style').value.trim();
+            return { items_per_day: items, style };
+        }
+        case 'hackernews': {
+            const top = parseInt(document.getElementById('board-hn-top').value) || 30;
+            const score = parseInt(document.getElementById('board-hn-score').value) || 0;
+            return { fetch_top_stories: top, min_score: score };
+        }
+        case 'reddit': {
+            const raw = document.getElementById('board-reddit-subs').value;
+            const subreddits = raw.split('\n').map(line => {
+                const parts = line.trim().split(/\s+/);
+                if (!parts[0]) return null;
+                return {
+                    subreddit: parts[0],
+                    sort: parts[1] || 'hot',
+                    min_score: parseInt(parts[2]) || 10,
+                };
+            }).filter(Boolean);
+            const comments = parseInt(document.getElementById('board-reddit-comments').value) || 5;
+            return { subreddits, fetch_comments: comments };
+        }
+        case 'github': {
+            const rawRepos = document.getElementById('board-github-repos').value;
+            const repos = rawRepos.split('\n').map(line => {
+                const [owner, repo] = line.trim().split('/');
+                if (!owner || !repo) return null;
+                return { owner, repo };
+            }).filter(Boolean);
+            const rawUsers = document.getElementById('board-github-users').value;
+            const users = rawUsers.split('\n').map(u => u.trim()).filter(Boolean);
+            return { repos, users };
+        }
+        case 'multi': {
+            const raw = document.getElementById('board-multi-json').value.trim();
+            try {
+                const parsed = raw ? JSON.parse(raw) : {};
+                return { sources: parsed };
+            } catch {
+                alert('混合数据源 JSON 格式不正确');
+                return null;
+            }
+        }
+        default:
+            return {};
     }
 }
 
@@ -386,25 +529,40 @@ async function saveBoard(event) {
     const icon = document.getElementById('board-icon').value.trim();
     const sourceType = document.getElementById('board-source-type').value;
     const prompt = document.getElementById('board-prompt').value.trim();
+    const promptKey = document.getElementById('board-prompt-key').value;
+    const schedule = document.getElementById('board-schedule').value.trim();
+    const notifyChannels = document.getElementById('board-notify').value.trim();
     
+    let perspectives = null;
+    const perspectivesRaw = document.getElementById('board-perspectives').value.trim();
+    if (perspectivesRaw) {
+        try {
+            perspectives = JSON.parse(perspectivesRaw);
+        } catch (e) {
+            alert('多视角 (Perspectives) JSON 格式不正确');
+            return;
+        }
+    }
+    
+    const sourceConfig = _collectSourceConfig(sourceType);
+    if (sourceConfig === null) return; // validation failed
+
     const payload = {
         slug: slug,
         name: name,
         icon: icon,
         source_type: sourceType,
         system_prompt: prompt || null,
-        source_config: {}
+        source_config: sourceConfig,
+        prompt_key: promptKey,
+        schedule: schedule,
+        notify_channels: notifyChannels,
+        perspectives: perspectives
     };
-    
-    if (sourceType === 'rss') {
-        const rawUrls = document.getElementById('board-rss-urls').value;
-        const urls = rawUrls.split('\n').map(u => u.trim()).filter(u => u.length > 0);
-        payload.source_config = { rss_urls: urls };
-    }
     
     try {
         const url = isEdit ? `/api/v1/boards/${originalSlug}` : '/api/v1/boards';
-        const method = isEdit ? 'PUT' : 'POST';
+        const method = isEdit ? 'PATCH' : 'POST';
         
         const res = await fetch(url, {
             method: method,
@@ -449,6 +607,47 @@ async function deleteBoard() {
         fetchSummary();
     } catch (e) {
         alert("删除板块出错: " + e.message);
+    }
+}
+
+async function previewBoard() {
+    const slug = document.getElementById('board-original-slug').value;
+    if (!slug) return;
+    
+    const previewBtn = document.getElementById('board-preview-btn');
+    const previewResult = document.getElementById('board-preview-result');
+    const previewContent = document.getElementById('board-preview-content');
+    
+    previewBtn.disabled = true;
+    previewBtn.textContent = '运行中...';
+    previewResult.style.display = 'block';
+    previewContent.textContent = '正在执行抓取与 LLM 分析...\n这可能需要一分钟时间，请稍候。';
+    
+    try {
+        const res = await fetch(`/api/v1/boards/${slug}/preview`, { method: 'POST' });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || '预览失败');
+        }
+        const data = await res.json();
+        
+        let out = `【总览】\n${data.overview}\n\n`;
+        out += `【抓取统计】\n${JSON.stringify(data.source_stats || {}, null, 2)}\n\n`;
+        if (data.top_news && data.top_news.length > 0) {
+            out += `【内容列表 (${data.top_news.length} 条)】\n`;
+            data.top_news.forEach((n, i) => {
+                out += `${i + 1}. ${n.headline} [${n.category}]\n`;
+                if (n.key_points) {
+                    n.key_points.forEach(k => out += `   - ${k}\n`);
+                }
+            });
+        }
+        previewContent.textContent = out;
+    } catch (e) {
+        previewContent.textContent = `❌ 预览出错: ${e.message}`;
+    } finally {
+        previewBtn.disabled = false;
+        previewBtn.textContent = '试运行 (Preview)';
     }
 }
 

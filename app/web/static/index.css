@@ -986,6 +986,60 @@ body.light-mode .modal-overlay {
     resize: vertical;
 }
 
+/* Board Source Config Panels */
+.board-source-config {
+    margin-bottom: 0.5rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-color);
+}
+.form-group-row {
+    display: flex;
+    gap: 1rem;
+}
+.form-group-row .form-group {
+    flex: 1;
+}
+.form-hint {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+}
+
+/* Board Advanced Settings Toggle */
+.form-section-divider {
+    margin: 1.5rem 0 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+.section-toggle-btn {
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0;
+    font-family: inherit;
+}
+.toggle-icon {
+    font-size: 0.8rem;
+    transition: transform 0.2s ease;
+}
+.section-toggle-btn.open .toggle-icon {
+    transform: rotate(90deg);
+}
+.board-advanced-settings {
+    padding-left: 1rem;
+    border-left: 2px solid var(--border-color);
+    margin-left: 0.25rem;
+    margin-bottom: 1rem;
+}
+
 /* Board Modal: Mode Tabs (AI Wizard / Manual) */
 .board-mode-tabs {
     display: flex;
