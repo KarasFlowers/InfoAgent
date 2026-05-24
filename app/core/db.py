@@ -333,6 +333,114 @@ async def _migrate_phase2_schema(conn) -> None:
         )
 
 
+async def _seed_default_sources(conn) -> None:
+    """Seed the Source table from settings.RSS_FEEDS on first run.
+
+    Only runs when the Source table is empty. Maps each RSS feed URL
+    to a Source row associated with the default board.
+    """
+    from app.core.config import settings as _settings
+
+    count_row = await conn.exec_driver_sql("SELECT COUNT(*) FROM source")
+    existing = count_row.fetchone()[0]
+    if existing > 0:
+        return
+
+    # Get default board id
+    board_row = await conn.exec_driver_sql("SELECT id FROM board WHERE is_default = 1 LIMIT 1")
+    board_row_result = board_row.fetchone()
+    board_id = board_row_result[0] if board_row_result else None
+
+    for feed_url in _settings.RSS_FEEDS:
+        await conn.exec_driver_sql(
+            "INSERT INTO source (url, name, source_type, enabled, board_id, health_status, created_at) "
+            "VALUES (?, '', 'rss', 1, ?, 'healthy', CURRENT_TIMESTAMP)",
+            (feed_url, board_id),
+        )
+
+
+async def _seed_default_prompt_configs(conn) -> None:
+    """Seed the PromptConfig table from app/prompts/*.md files on first run.
+
+    Only runs when the PromptConfig table is empty.
+    """
+    import os as _os
+
+    count_row = await conn.exec_driver_sql("SELECT COUNT(*) FROM promptconfig")
+    existing = count_row.fetchone()[0]
+    if existing > 0:
+        return
+
+    prompts_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "app", "prompts")
+    if not _os.path.isdir(prompts_dir):
+        return
+
+    for filename in _os.listdir(prompts_dir):
+        if not filename.endswith(".md") or filename.startswith("_"):
+            continue
+        key = filename[:-3]  # strip .md
+        filepath = _os.path.join(prompts_dir, filename)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                template = f.read()
+            await conn.exec_driver_sql(
+                "INSERT INTO promptconfig (key, template, temperature, max_tokens, is_active, created_at) "
+                "VALUES (?, ?, 0.3, 4000, 1, CURRENT_TIMESTAMP)",
+                (key, template),
+            )
+        except Exception:
+            pass  # Skip files that can't be read
+
+
+async def _seed_default_model_api_configs(conn) -> None:
+    """Seed the ModelApiConfig table from environment variables on first run.
+
+    Only runs when the ModelApiConfig table is empty.
+    """
+    from app.core.config import settings as _settings
+
+    count_row = await conn.exec_driver_sql("SELECT COUNT(*) FROM modelapiconfig")
+    existing = count_row.fetchone()[0]
+    if existing > 0:
+        return
+
+    # Default config from current LLM settings
+    await conn.exec_driver_sql(
+        "INSERT INTO modelapiconfig (name, base_url, api_key, model_name, concurrency, is_active, created_at) "
+        "VALUES (?, ?, ?, ?, 5, 1, CURRENT_TIMESTAMP)",
+        (
+            "default",
+            _settings.effective_llm_base_url,
+            _settings.effective_llm_api_key or "",
+            _settings.LLM_MODEL,
+        ),
+    )
+
+    # Fast tier if configured
+    if _settings.FAST_LLM:
+        from app.services.llm.client import _parse_tier_spec
+        parsed = _parse_tier_spec(_settings.FAST_LLM, _settings.effective_llm_base_url, _settings.effective_llm_api_key)
+        if parsed:
+            base_url, api_key, model = parsed
+            await conn.exec_driver_sql(
+                "INSERT INTO modelapiconfig (name, base_url, api_key, model_name, concurrency, is_active, created_at) "
+                "VALUES (?, ?, ?, ?, 5, 1, CURRENT_TIMESTAMP)",
+                ("fast", base_url, api_key or "", model),
+            )
+
+    # Smart tier if configured
+    if _settings.SMART_LLM:
+        from app.services.llm.client import _parse_tier_spec
+        parsed = _parse_tier_spec(_settings.SMART_LLM, _settings.effective_llm_base_url, _settings.effective_llm_api_key)
+        if parsed:
+            base_url, api_key, model = parsed
+            await conn.exec_driver_sql(
+                "INSERT INTO modelapiconfig (name, base_url, api_key, model_name, concurrency, is_active, created_at) "
+                "VALUES (?, ?, ?, ?, 3, 1, CURRENT_TIMESTAMP)",
+                ("smart", base_url, api_key or "", model),
+            )
+
+
 async def init_db():
     """Create the database tables if they don't exist."""
     async with engine.begin() as conn:
@@ -346,6 +454,15 @@ async def init_db():
             UserPersona,
             UserMemory,
             ArticleOverview,
+            Source,
+            PromptConfig,
+            ModelApiConfig,
+            TaskRun,
+            ContentCluster,
+            BlacklistKeyword,
+            FilteredItem,
+            SourceHealthLog,
+            DailyReportRefinementSession,
         )
         await conn.run_sync(SQLModel.metadata.create_all)
         await _ensure_legacy_columns(conn)
@@ -354,6 +471,9 @@ async def init_db():
         await _ensure_feedback_uniqueness(conn)
         await _migrate_json_columns(conn)
         await _migrate_phase2_schema(conn)
+        await _seed_default_sources(conn)
+        await _seed_default_prompt_configs(conn)
+        await _seed_default_model_api_configs(conn)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

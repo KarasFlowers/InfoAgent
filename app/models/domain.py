@@ -124,3 +124,151 @@ class UserMemory(SQLModel, table=True):
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: Optional[datetime] = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Runtime Configuration Models (P0 1.2 — database-backed configuration)
+# ---------------------------------------------------------------------------
+
+
+class Source(SQLModel, table=True):
+    """An RSS or API data source, replacing hardcoded RSS_FEEDS in config.py."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    url: str = Field(index=True)                      # RSS feed URL or API endpoint
+    name: str = Field(default="")                     # display name (auto-detected or manual)
+    site_url: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # homepage
+    source_type: str = Field(default="rss", index=True)  # "rss" | "hackernews" | "reddit" | "github"
+    enabled: bool = Field(default=True)
+    board_id: Optional[int] = Field(
+        default=None, foreign_key="board.id", ondelete="CASCADE", index=True
+    )  # null = global (available to all boards)
+    health_status: str = Field(default="healthy", sa_column=Column(Text, nullable=False, server_default="healthy"))  # "healthy" | "degraded" | "unhealthy"
+    last_fetched_at: Optional[datetime] = Field(default=None)
+    last_error: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class PromptConfig(SQLModel, table=True):
+    """Hot-reloadable prompt template, replacing app/prompts/*.md files."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key: str = Field(index=True, unique=True)         # e.g. "daily_briefing", "quality_scoring"
+    template: str = Field(sa_column=Column(Text, nullable=False))  # prompt body
+    system_prompt: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # optional system prefix
+    temperature: float = Field(default=0.3)
+    max_tokens: int = Field(default=4000)
+    model_api_config_id: Optional[int] = Field(
+        default=None, foreign_key="modelapiconfig.id", ondelete="SET NULL"
+    )  # null = use default tier
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: Optional[datetime] = Field(default=None)
+
+
+class ModelApiConfig(SQLModel, table=True):
+    """LLM provider configuration, replacing environment variable multi-tier setup."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)        # e.g. "default", "fast-groq", "smart-openai"
+    base_url: str                                     # e.g. "https://api.openai.com/v1"
+    api_key: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # encrypted at rest in future
+    model_name: str                                   # e.g. "gpt-4o-mini"
+    concurrency: int = Field(default=5)               # max parallel requests
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: Optional[datetime] = Field(default=None)
+
+
+class TaskRun(SQLModel, table=True):
+    """Background task execution record for observability."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    kind: str = Field(index=True)                     # "daily_push" | "cleanup" | "auto_extract" | "summary_generation"
+    trigger_type: str = Field(default="scheduled", sa_column=Column(Text, nullable=False, server_default="scheduled"))  # "scheduled" | "manual" | "api"
+    status: str = Field(default="queued", index=True)  # "queued" | "running" | "done" | "failed"
+    progress_label: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # e.g. "scoring articles"
+    progress_current: int = Field(default=0)
+    progress_total: int = Field(default=0)
+    stage_timings: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # {"scoring": 2.3, "summary": 5.1}
+    ai_call_breakdown: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # {"scoring": {"tokens": 500}, "summary": {"tokens": 2000}}
+    error_summary: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    board_id: Optional[int] = Field(default=None, foreign_key="board.id", ondelete="SET NULL", index=True)
+    started_at: Optional[datetime] = Field(default=None)
+    finished_at: Optional[datetime] = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# ---------------------------------------------------------------------------
+# Filtering Models (P1 2.1 — rule-based content quality filtering)
+# ---------------------------------------------------------------------------
+
+
+class ContentCluster(SQLModel, table=True):
+    """A group of related news items covering the same event/topic."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    fingerprint: str = Field(index=True, unique=True)  # hash-based dedup key
+    title: str                                         # representative cluster title
+    summary: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # AI-generated cluster summary
+    item_count: int = Field(default=1)
+    item_ids: Optional[list] = Field(default_factory=list, sa_column=Column(JSON))  # list of NewsItem IDs in this cluster
+    first_seen_at: Optional[datetime] = Field(default=None)
+    last_updated_at: Optional[datetime] = Field(default=None)
+    board_id: Optional[int] = Field(default=None, foreign_key="board.id", ondelete="CASCADE", index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class BlacklistKeyword(SQLModel, table=True):
+    """A keyword or pattern that causes content to be automatically filtered."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    pattern: str = Field(index=True)                  # keyword or regex pattern
+    match_field: str = Field(default="title", sa_column=Column(Text, nullable=False, server_default="title"))  # "title" | "url" | "content"
+    is_regex: bool = Field(default=False)             # if True, pattern is treated as regex
+    reason: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # e.g. "marketing", "low_quality"
+    is_active: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class FilteredItem(SQLModel, table=True):
+    """An item caught by the rule filter, kept for admin review and potential restore."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: str
+    url: str = Field(index=True)
+    source: str = Field(default="")
+    filter_reason: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))  # which rule matched
+    filter_rule_id: Optional[int] = Field(default=None, foreign_key="blacklistkeyword.id", ondelete="SET NULL")
+    status: str = Field(default="filtered", index=True)  # "filtered" | "restored" | "confirmed"
+    board_id: Optional[int] = Field(default=None, foreign_key="board.id", ondelete="CASCADE", index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    reviewed_at: Optional[datetime] = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Source Health Monitoring (P2 3.2)
+# ---------------------------------------------------------------------------
+
+
+class SourceHealthLog(SQLModel, table=True):
+    """A single health-check record for an RSS/data source."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    source_id: int = Field(foreign_key="source.id", ondelete="CASCADE", index=True)
+    status: str = Field(default="ok")                # "ok" | "error" | "timeout"
+    status_code: Optional[int] = Field(default=None)  # HTTP status code
+    error_message: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    response_time_ms: Optional[int] = Field(default=None)
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+# ---------------------------------------------------------------------------
+# Daily Report Refinement (P2 3.1)
+# ---------------------------------------------------------------------------
+
+
+class DailyReportRefinementSession(SQLModel, table=True):
+    """A user-driven refinement session on an existing daily report."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    board_id: Optional[int] = Field(default=None, foreign_key="board.id", ondelete="CASCADE", index=True)
+    date: str = Field(index=True)                     # YYYY-MM-DD
+    instruction: str = Field(sa_column=Column(Text, nullable=False))  # user refinement instruction
+    original_summary_json: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    refined_summary_json: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    status: str = Field(default="pending", index=True)  # "pending" | "processing" | "done" | "failed"
+    error_message: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    finished_at: Optional[datetime] = Field(default=None)
