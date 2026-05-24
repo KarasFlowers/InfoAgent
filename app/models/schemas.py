@@ -55,11 +55,32 @@ class SummaryItem(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_llm_field_names(cls, values: dict) -> dict:
-        """LLM occasionally returns 'title' instead of 'headline'."""
+        """Normalise common LLM output deviations.
+
+        Handles:
+        - 'title' returned instead of 'headline'
+        - 'key_points' as a single string instead of list
+        - missing 'category' (defaults to 'general')
+        - missing 'tags' (defaults to [])
+        - 'event_type' / 'eventType' alias normalisation (future-proofing)
+        """
         if not isinstance(values, dict):
             return values
+        # headline ← title
         if "headline" not in values and "title" in values:
             values["headline"] = values.pop("title")
+        # key_points: string → split into list
+        kp = values.get("key_points")
+        if isinstance(kp, str):
+            values["key_points"] = [s.strip() for s in kp.split("\n") if s.strip()] or [kp]
+        elif kp is None:
+            values["key_points"] = []
+        # category fallback
+        if not values.get("category"):
+            values["category"] = "general"
+        # tags fallback
+        if "tags" not in values or values["tags"] is None:
+            values["tags"] = []
         return values
 
 
@@ -105,12 +126,46 @@ class DailySummaryResponse(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_top_news_items(cls, values: dict) -> dict:
-        """Ensure each top_news item has 'headline' even if LLM returned 'title'."""
+        """Normalise top_news items and required fields from LLM output.
+
+        Handles:
+        - 'title' → 'headline' in each top_news item
+        - key_points as string → list
+        - missing category → 'general'
+        - missing tags → []
+        - missing date → today
+        - missing/empty overview → placeholder
+        """
         if not isinstance(values, dict):
             return values
+
+        # Date fallback
+        if not values.get("date"):
+            from datetime import datetime
+            values["date"] = datetime.now().strftime("%Y-%m-%d")
+
+        # Overview fallback
+        if not values.get("overview"):
+            values["overview"] = ""
+
         top_news = values.get("top_news", [])
         if isinstance(top_news, list):
             for item in top_news:
-                if isinstance(item, dict) and "headline" not in item and "title" in item:
+                if not isinstance(item, dict):
+                    continue
+                # headline ← title
+                if "headline" not in item and "title" in item:
                     item["headline"] = item.pop("title")
+                # key_points: string → list
+                kp = item.get("key_points")
+                if isinstance(kp, str):
+                    item["key_points"] = [s.strip() for s in kp.split("\n") if s.strip()] or [kp]
+                elif kp is None:
+                    item["key_points"] = []
+                # category fallback
+                if not item.get("category"):
+                    item["category"] = "general"
+                # tags fallback
+                if "tags" not in item or item["tags"] is None:
+                    item["tags"] = []
         return values

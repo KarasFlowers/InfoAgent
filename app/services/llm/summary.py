@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.models.schemas import ContentItem, DailySummaryResponse, RSSResponse
 from app.prompts import get_prompt
 from app.services.db_service import db_service
+from app.services.llm.client import CircuitOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,46 @@ logger = logging.getLogger(__name__)
 def _get_editor_prompt() -> str:
     """Load the daily briefing editor prompt from external template."""
     return get_prompt("daily_briefing")
+
+
+def _build_fallback_summary(
+    articles: list[dict],
+    date_str: str | None = None,
+) -> DailySummaryResponse:
+    """Build a degraded summary when the LLM is unavailable.
+
+    Uses original titles as headlines and truncated summaries as key_points.
+    This ensures the user always gets *something* rather than a blank page.
+    """
+    from app.models.schemas import SummaryItem
+
+    date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+    top_news = []
+    for a in articles[:15]:
+        headline = a.get("title", "Untitled")
+        summary_text = a.get("summary", "")
+        key_points = []
+        if summary_text:
+            # Split first 200 chars into pseudo key-points
+            sentences = summary_text.replace(". ", ".\n").split("\n")
+            key_points = [s.strip() for s in sentences[:3] if s.strip()]
+        if not key_points:
+            key_points = ["(AI 摘要不可用，仅展示原始标题)"]
+        top_news.append(SummaryItem(
+            headline=headline,
+            category=a.get("category", "general"),
+            key_points=key_points,
+            tags=[],
+            original_link=a.get("link", ""),
+            source=a.get("source", "未知来源"),
+        ))
+    return DailySummaryResponse(
+        date=date_str,
+        overview="⚠️ AI 摘要服务暂时不可用，以下为原始文章列表（无 AI 摘要）。",
+        top_news=top_news,
+        source_stats={},
+        recommendation_report={"fallback": True},
+    )
 
 
 class SummaryMixin:
@@ -155,6 +196,17 @@ class SummaryMixin:
                 before_filter, len(content_items),
             )
 
+        # ---- Rule-based quality filter (blacklist + low-signal heuristics) ----
+        from app.services.filtering_service import apply_rule_filters
+
+        filter_result = await apply_rule_filters(content_items, session=session, board_id=board_id)
+        if filter_result.filtered_count > 0:
+            logger.info(
+                "Rule filter: %d -> %d items (filtered %d)",
+                len(content_items), len(filter_result.passed), filter_result.filtered_count,
+            )
+            content_items = filter_result.passed
+
         # ---- URL cross-source dedup + AI semantic dedup ----
         from app.services.dedup_service import (
             merge_cross_source_duplicates,
@@ -281,9 +333,12 @@ class SummaryMixin:
             parsed_json["recommendation_report"] = rec_report
 
             return DailySummaryResponse(**parsed_json), content_fallback
+        except CircuitOpenError as error:
+            logger.warning("LLM circuit breaker open, producing fallback summary: %s", error)
+            return _build_fallback_summary(high_quality), content_fallback
         except Exception as error:
             logger.exception("Error during LLM summarization: %s", error)
-            return None, content_fallback
+            return _build_fallback_summary(high_quality), content_fallback
 
     async def generate_perspective_summaries(
         self,
@@ -518,6 +573,9 @@ class SummaryMixin:
             }
 
             return DailySummaryResponse(**parsed)
+        except CircuitOpenError as error:
+            logger.warning("LLM circuit breaker open for pure-LLM board '%s': %s", board.slug, error)
+            return None
         except Exception as error:
             logger.exception("Error during pure-LLM generation: %s", error)
             return None

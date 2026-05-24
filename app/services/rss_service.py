@@ -14,6 +14,8 @@ async def fetch_and_parse_feed(url: str, client: httpx.AsyncClient) -> RSSRespon
     """
     Fetches a single RSS feed, checks cache first, and parses it into our standard schema.
     """
+    import time as _time
+
     try:
         # Cache Key logic
         cache_key = f"rss_feed_{url}"
@@ -26,8 +28,13 @@ async def fetch_and_parse_feed(url: str, client: httpx.AsyncClient) -> RSSRespon
 
         # 2. Cache Miss - Fetch the RSS XML
         logger.info(f"Fetching from web: {url}")
+        t0 = _time.monotonic()
         response = await client.get(url, timeout=10.0)
+        elapsed_ms = int((_time.monotonic() - t0) * 1000)
         response.raise_for_status()
+
+        # Log healthy fetch
+        await _log_health(url, status="ok", status_code=response.status_code, response_time_ms=elapsed_ms)
         
         # Parse the XML using feedparser
         feed = feedparser.parse(response.text)
@@ -73,12 +80,52 @@ async def fetch_and_parse_feed(url: str, client: httpx.AsyncClient) -> RSSRespon
             
         return response_obj
         
+    except httpx.TimeoutException as e:
+        logger.error(f"Timeout fetching feed {url}: {e}")
+        await _log_health(url, status="timeout", error_message=str(e))
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error fetching feed {url}: {e}")
+        await _log_health(url, status="error", status_code=e.response.status_code, error_message=str(e))
     except httpx.HTTPError as e:
         logger.error(f"HTTP error fetching feed {url}: {e}")
+        await _log_health(url, status="error", error_message=str(e))
     except Exception as e:
         logger.error(f"Unexpected error parsing feed {url}: {e}")
+        await _log_health(url, status="error", error_message=str(e))
         
     return None
+
+
+async def _log_health(
+    url: str,
+    *,
+    status: str = "ok",
+    status_code: int | None = None,
+    error_message: str = "",
+    response_time_ms: int | None = None,
+) -> None:
+    """Best-effort: record source health. Silently skip if source not in DB."""
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.models.domain import Source
+        from app.services.source_health_service import log_source_health
+        from sqlalchemy import select
+
+        async with AsyncSessionLocal() as session:
+            stmt = select(Source).where(Source.url == url).limit(1)
+            result = await session.execute(stmt)
+            source = result.scalar_one_or_none()
+            if source and source.id:
+                await log_source_health(
+                    session,
+                    source.id,
+                    status=status,
+                    status_code=status_code,
+                    error_message=error_message,
+                    response_time_ms=response_time_ms,
+                )
+    except Exception as err:
+        logger.debug("Source health logging skipped: %s", err)
 
 async def fetch_all_feeds(urls: list[str]) -> list[RSSResponse]:
     """
