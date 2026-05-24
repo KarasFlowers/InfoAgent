@@ -3,6 +3,7 @@ import json
 import logging
 
 from app.prompts import get_prompt
+from app.services.llm.client import CircuitOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class ScoringMixin:
                 temperature=0.1,
                 max_tokens=2000,
             )
-            
+
             result = response.choices[0].message.content
             parsed = json.loads(result)
             if isinstance(parsed, dict):
@@ -54,7 +55,7 @@ class ScoringMixin:
                 for item in scores
                 if isinstance(item, dict) and item.get("score", 0) >= quality_threshold
             }
-            
+
             filtered = [article for i, article in enumerate(articles) if i in high_quality_indices]
             excluded = [article for i, article in enumerate(articles) if i not in high_quality_indices]
 
@@ -80,6 +81,9 @@ class ScoringMixin:
                 logger.info("Fallback: kept top %s articles by score (needed >=8)", len(filtered))
 
             return filtered if filtered else articles[:10], report
+        except CircuitOpenError as error:
+            logger.warning("Circuit breaker open during scoring, skipping LLM filter: %s", error)
+            return articles, {"total_fetched": len(articles), "scoring_skipped": True, "reason": "circuit_open"}
         except Exception as error:
             logger.warning("Article scoring failed, using all articles: %s", error)
             return articles, {"total_fetched": len(articles), "error": str(error)}
