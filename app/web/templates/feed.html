@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} | Argos 公开信息流</title>
+    <meta name="description" content="{{ description }}">
+    <meta property="og:title" content="{{ title }}">
+    <meta property="og:description" content="{{ description }}">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Argos">
+    <link rel="alternate" type="application/rss+xml" title="Argos RSS" href="/api/v1/feed">
+    <link rel="canonical" href="{{ canonical_url }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --surface: #12121a;
+            --border: #1e1e2e;
+            --text: #e4e4e7;
+            --text-dim: #71717a;
+            --accent: #818cf8;
+            --accent-hover: #6366f1;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.65;
+            min-height: 100vh;
+        }
+        .container { max-width: 720px; margin: 0 auto; padding: 2rem 1.25rem; }
+        header { margin-bottom: 2rem; }
+        .brand {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .date { color: var(--text-dim); margin-top: 0.5rem; font-size: 0.95rem; }
+        .overview {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+            margin-bottom: 2rem;
+            font-size: 0.95rem;
+            color: var(--text-dim);
+        }
+        .section-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent);
+            margin: 1.5rem 0 0.75rem;
+            text-transform: capitalize;
+        }
+        .item {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1rem 1.25rem;
+            margin-bottom: 0.75rem;
+            transition: border-color 0.2s;
+        }
+        .item:hover { border-color: var(--accent); }
+        .item h3 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        .item h3 a {
+            color: var(--text);
+            text-decoration: none;
+        }
+        .item h3 a:hover { color: var(--accent); }
+        .kp { color: var(--text-dim); font-size: 0.85rem; margin: 0.25rem 0; padding-left: 1rem; }
+        .meta { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.5rem; }
+        .tag {
+            display: inline-block;
+            background: rgba(129, 140, 248, 0.12);
+            color: var(--accent);
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            margin-right: 4px;
+        }
+        footer {
+            margin-top: 3rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border);
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.8rem;
+        }
+        footer a { color: var(--accent); text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <a href="/feed" class="brand">Argos</a>
+            <p class="date">{{ date }} · {{ board_name }}</p>
+        </header>
+
+        {% if overview %}
+        <div class="overview">{{ overview }}</div>
+        {% endif %}
+
+        {% for section_name, items in sections.items() %}
+        <h2 class="section-title">{{ section_name }}</h2>
+        {% for item in items %}
+        <article class="item">
+            <h3><a href="{{ item.original_link }}" target="_blank" rel="noopener">{{ item.headline }}</a></h3>
+            {% for kp in item.key_points %}
+            <p class="kp">• {{ kp }}</p>
+            {% endfor %}
+            <div class="meta">
+                <span>{{ item.source }}</span>
+                {% for tag in item.tags %}
+                <span class="tag">{{ tag }}</span>
+                {% endfor %}
+            </div>
+        </article>
+        {% endfor %}
+        {% endfor %}
+
+        <footer>
+            <p>Powered by <a href="/">Argos</a> · AI-driven daily briefing</p>
+            <p><a href="/api/v1/feed">RSS Feed</a></p>
+        </footer>
+    </div>
+</body>
+</html>
