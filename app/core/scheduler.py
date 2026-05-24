@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from contextlib import asynccontextmanager
+from datetime import datetime, UTC
 from typing import List, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -30,6 +31,74 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
+
+
+# ---------------------------------------------------------------------------
+# TaskRun tracking
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def track_task_run(kind: str, trigger_type: str = "scheduled", board_id: int | None = None):
+    """Context manager that creates and updates a TaskRun record around an async job.
+
+    Usage::
+
+        async with track_task_run("cleanup") as tr:
+            tr.progress_label = "deleting old summaries"
+            await do_cleanup()
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.models.domain import TaskRun
+
+    task = TaskRun(kind=kind, trigger_type=trigger_type, status="running",
+                   started_at=datetime.now(UTC), board_id=board_id)
+
+    async with AsyncSessionLocal() as session:
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+
+    class _TaskRef:
+        def __init__(self):
+            self.id = task_id
+            self.progress_label = ""
+            self.progress_current = 0
+            self.progress_total = 0
+            self.stage_timings = {}
+            self.ai_call_breakdown = {}
+
+    ref = _TaskRef()
+
+    try:
+        yield ref
+    except Exception as exc:
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select as _sel
+            stmt = _sel(TaskRun).where(TaskRun.id == task_id)
+            result = await session.execute(stmt)
+            tr = result.scalar_one_or_none()
+            if tr:
+                tr.status = "failed"
+                tr.error_summary = str(exc)[:500]
+                tr.finished_at = datetime.now(UTC)
+                await session.commit()
+        raise
+    else:
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select as _sel
+            stmt = _sel(TaskRun).where(TaskRun.id == task_id)
+            result = await session.execute(stmt)
+            tr = result.scalar_one_or_none()
+            if tr:
+                tr.status = "done"
+                tr.progress_label = ref.progress_label
+                tr.progress_current = ref.progress_current
+                tr.progress_total = ref.progress_total
+                tr.stage_timings = ref.stage_timings or None
+                tr.ai_call_breakdown = ref.ai_call_breakdown or None
+                tr.finished_at = datetime.now(UTC)
+                await session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -64,11 +133,15 @@ async def _async_cleanup() -> None:
     from app.core.db import AsyncSessionLocal
     from app.services.db_service import db_service
 
-    async with AsyncSessionLocal() as session:
-        deleted = await db_service.cleanup_old_data(
-            session, days_to_keep=settings.HISTORY_DAYS_TO_KEEP
-        )
-        logger.info("Scheduled cleanup removed %s old summaries", deleted)
+    async with track_task_run("cleanup") as tr:
+        tr.progress_label = "deleting old summaries"
+        async with AsyncSessionLocal() as session:
+            deleted = await db_service.cleanup_old_data(
+                session, days_to_keep=settings.HISTORY_DAYS_TO_KEEP
+            )
+            logger.info("Scheduled cleanup removed %s old summaries", deleted)
+            tr.progress_total = 1
+            tr.progress_current = 1
 
 
 def _make_board_push_runner(board_slug: str):
@@ -101,10 +174,14 @@ async def _async_auto_extract_interests() -> None:
     from app.core.db import AsyncSessionLocal
     from app.services.learning_service import auto_extract_interests
 
-    async with AsyncSessionLocal() as session:
-        count = await auto_extract_interests(session)
-        if count > 0:
-            logger.info("Auto-extracted %d new interests from feedback", count)
+    async with track_task_run("auto_extract_interests") as tr:
+        tr.progress_label = "extracting interests from feedback"
+        async with AsyncSessionLocal() as session:
+            count = await auto_extract_interests(session)
+            if count > 0:
+                logger.info("Auto-extracted %d new interests from feedback", count)
+            tr.progress_total = 1
+            tr.progress_current = 1
 
 
 def _run_auto_extract_memories() -> None:
@@ -119,10 +196,14 @@ async def _async_auto_extract_memories() -> None:
     from app.core.db import AsyncSessionLocal
     from app.services.memory_service import auto_extract_memories
 
-    async with AsyncSessionLocal() as session:
-        count = await auto_extract_memories(session)
-        if count > 0:
-            logger.info("Auto-extracted %d new memories from chat", count)
+    async with track_task_run("auto_extract_memories") as tr:
+        tr.progress_label = "extracting memories from chat"
+        async with AsyncSessionLocal() as session:
+            count = await auto_extract_memories(session)
+            if count > 0:
+                logger.info("Auto-extracted %d new memories from chat", count)
+            tr.progress_total = 1
+            tr.progress_current = 1
 
 
 async def _async_push_boards(
@@ -142,73 +223,81 @@ async def _async_push_boards(
     from app.services.notification import notify_service
     from app.services.source_adapters import get_adapter, UnknownSourceTypeError
 
-    search_date = datetime.now().strftime("%Y-%m-%d")
+    trigger = "manual" if slugs else "scheduled"
+    async with track_task_run("daily_push", trigger_type=trigger) as tr:
+        tr.progress_label = "generating summaries and pushing notifications"
 
-    async with AsyncSessionLocal() as session:
-        boards = await db_service.list_boards(session, active_only=True)
-        if not boards:
-            logger.warning("No active boards found; skipping push.")
-            return
+        search_date = datetime.now().strftime("%Y-%m-%d")
 
-        # Filter boards
-        if slugs:
-            boards = [b for b in boards if b.slug in slugs]
-        elif only_global:
-            boards = [b for b in boards if not b.schedule or not b.schedule.strip()]
+        async with AsyncSessionLocal() as session:
+            boards = await db_service.list_boards(session, active_only=True)
+            if not boards:
+                logger.warning("No active boards found; skipping push.")
+                return
 
-        for board in boards:
-            logger.info("Push: processing board '%s'", board.slug)
-            existing = await db_service.get_summary_by_date(
-                session, search_date, board_id=board.id
-            )
-            summary = existing
-            if not summary:
-                try:
-                    adapter = get_adapter(board.source_type)
-                except UnknownSourceTypeError as error:
-                    logger.error("Skipping board '%s': %s", board.slug, error)
-                    continue
+            # Filter boards
+            if slugs:
+                boards = [b for b in boards if b.slug in slugs]
+            elif only_global:
+                boards = [b for b in boards if not b.schedule or not b.schedule.strip()]
 
-                try:
-                    summary, content_fallback = await adapter.produce(board=board, session=session)
-                except Exception:
-                    logger.exception("Adapter '%s' failed for board '%s'", board.source_type, board.slug)
-                    continue
+            tr.progress_total = len(boards)
 
-                if summary:
+            for i, board in enumerate(boards):
+                tr.progress_current = i + 1
+                tr.progress_label = f"processing board '{board.slug}' ({i+1}/{len(boards)})"
+                logger.info("Push: processing board '%s'", board.slug)
+                existing = await db_service.get_summary_by_date(
+                    session, search_date, board_id=board.id
+                )
+                summary = existing
+                if not summary:
                     try:
-                        await db_service.save_summary(session, summary, board_id=board.id)
-                    except Exception:
-                        logger.exception(
-                            "Failed to save background summary for board '%s'", board.slug
-                        )
+                        adapter = get_adapter(board.source_type)
+                    except UnknownSourceTypeError as error:
+                        logger.error("Skipping board '%s': %s", board.slug, error)
                         continue
 
-                    # Enqueue URLs for background ingestion (RSS items only).
-                    if settings.RAG_BACKGROUND_INGEST_ENABLED:
-                        from app.services.rag_service import enqueue_for_ingest
-                        article_urls = [
-                            item.original_link
-                            for item in summary.top_news
-                            if item.original_link and not item.original_link.startswith("llm://")
-                        ]
-                        if article_urls:
-                            fb = {u: content_fallback[u] for u in article_urls if u in content_fallback}
-                            enqueue_for_ingest(article_urls, fallback_contents=fb if fb else None)
+                    try:
+                        summary, content_fallback = await adapter.produce(board=board, session=session)
+                    except Exception:
+                        logger.exception("Adapter '%s' failed for board '%s'", board.source_type, board.slug)
+                        continue
 
-            if summary:
-                # Determine per-board notification channels (or use global default)
-                board_channels = None
-                if board.notify_channels:
-                    board_channels = [
-                        ch.strip() for ch in board.notify_channels.split(",") if ch.strip()
-                    ]
-                try:
-                    await notify_service.send(summary, channels=board_channels)
-                except Exception:
-                    logger.exception("Failed to notify for board '%s'", board.slug)
-            else:
-                logger.warning("No summary produced for board '%s'", board.slug)
+                    if summary:
+                        try:
+                            await db_service.save_summary(session, summary, board_id=board.id)
+                        except Exception:
+                            logger.exception(
+                                "Failed to save background summary for board '%s'", board.slug
+                            )
+                            continue
+
+                        # Enqueue URLs for background ingestion (RSS items only).
+                        if settings.RAG_BACKGROUND_INGEST_ENABLED:
+                            from app.services.rag_service import enqueue_for_ingest
+                            article_urls = [
+                                item.original_link
+                                for item in summary.top_news
+                                if item.original_link and not item.original_link.startswith("llm://")
+                            ]
+                            if article_urls:
+                                fb = {u: content_fallback[u] for u in article_urls if u in content_fallback}
+                                enqueue_for_ingest(article_urls, fallback_contents=fb if fb else None)
+
+                if summary:
+                    # Determine per-board notification channels (or use global default)
+                    board_channels = None
+                    if board.notify_channels:
+                        board_channels = [
+                            ch.strip() for ch in board.notify_channels.split(",") if ch.strip()
+                        ]
+                    try:
+                        await notify_service.send(summary, channels=board_channels)
+                    except Exception:
+                        logger.exception("Failed to notify for board '%s'", board.slug)
+                else:
+                    logger.warning("No summary produced for board '%s'", board.slug)
 
 
 # ---------------------------------------------------------------------------

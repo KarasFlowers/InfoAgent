@@ -132,3 +132,62 @@ async def root(request: Request):
         name="index.html", 
         context={}
     )
+
+
+@app.get("/feed", response_class=HTMLResponse)
+async def public_feed(request: Request, date: str = "", board: str = ""):
+    """Public SEO-friendly HTML feed page — no auth required."""
+    from datetime import datetime as _dt
+    from app.core.db import AsyncSessionLocal
+    from app.services.db_service import db_service
+
+    search_date = date or _dt.now().strftime("%Y-%m-%d")
+    async with AsyncSessionLocal() as session:
+        board_obj = None
+        if board:
+            board_obj = await db_service.get_board_by_slug(session, board)
+        if not board_obj:
+            board_obj = await db_service.get_default_board(session)
+
+        board_id = board_obj.id if board_obj else None
+        board_name = board_obj.name if board_obj else "Argos"
+
+        summary = await db_service.get_summary_by_date(session, search_date, board_id=board_id)
+
+    if not summary:
+        return templates.TemplateResponse(
+            request=request,
+            name="feed.html",
+            context={
+                "title": f"Argos Daily Briefing — {search_date}",
+                "description": "No briefing available for this date.",
+                "canonical_url": f"/feed?date={search_date}",
+                "date": search_date,
+                "board_name": board_name,
+                "overview": "该日期暂无简报。",
+                "sections": {},
+            },
+        )
+
+    # Group items by category
+    sections: dict[str, list] = {}
+    for item in summary.top_news:
+        cat = item.category or "general"
+        sections.setdefault(cat, []).append(item)
+
+    title = f"{board_name} · {search_date}"
+    desc = summary.overview[:160] if summary.overview else f"Argos AI daily briefing for {search_date}"
+
+    return templates.TemplateResponse(
+        request=request,
+        name="feed.html",
+        context={
+            "title": title,
+            "description": desc,
+            "canonical_url": f"/feed?date={search_date}&board={board_obj.slug if board_obj else ''}",
+            "date": search_date,
+            "board_name": board_name,
+            "overview": summary.overview,
+            "sections": sections,
+        },
+    )

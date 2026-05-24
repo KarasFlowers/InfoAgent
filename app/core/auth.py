@@ -26,7 +26,7 @@ from starlette.responses import JSONResponse, Response
 logger = logging.getLogger(__name__)
 
 # Paths that never require authentication.
-_PUBLIC_PATH_PREFIXES = ("/", "/static", "/api/v1/ping")
+_PUBLIC_PATH_PREFIXES = ("/", "/static", "/feed", "/api/v1/ping")
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
