@@ -11,20 +11,34 @@ class RedisService:
         self._redis: Redis | None = None
         
     async def get_client(self) -> Redis | None:
-        if self._redis is None:
+        if self._redis is not None:
+            # Verify existing connection is still alive
             try:
-                self._redis = Redis.from_url(
-                    settings.REDIS_URL,
-                    decode_responses=True,
-                    socket_timeout=2.0
-                )
-                # Test connection
                 await self._redis.ping()
-                logger.info("Successfully connected to Redis.")
-            except Exception as e:
-                logger.warning("Failed to connect to Redis at %s: %s", settings.REDIS_URL, e)
+                return self._redis
+            except Exception:
+                # Connection lost — reset and fall through to reconnect
+                logger.info("Redis connection lost, attempting reconnect...")
+                try:
+                    await self._redis.aclose()
+                except Exception:
+                    pass
                 self._redis = None
-                
+
+        # Attempt (re)connection
+        try:
+            self._redis = Redis.from_url(
+                settings.REDIS_URL,
+                decode_responses=True,
+                socket_timeout=2.0,
+                retry_on_timeout=True,
+            )
+            await self._redis.ping()
+            logger.info("Successfully connected to Redis.")
+        except Exception as e:
+            logger.warning("Failed to connect to Redis at %s: %s", settings.REDIS_URL, e)
+            self._redis = None
+
         return self._redis
         
     async def get_cache(self, key: str) -> dict | None:

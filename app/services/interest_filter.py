@@ -8,7 +8,12 @@ scoring/summarisation pipeline. Two layers:
    - Drops items matching ``block_topic`` personas.
    - Boosts items matching ``focus_topic`` / ``extracted`` personas to the front.
 
-2. **Persona-aware scoring prompt injection** (used by ScoringMixin):
+2. **Embedding similarity filter** (optional, requires Bi-Encoder model):
+   - When the Bi-Encoder model is available, computes cosine similarity
+     between persona content embeddings and item title/content embeddings.
+   - Falls back to keyword-only logic when the model is not loaded.
+
+3. **Persona-aware scoring prompt injection** (used by ScoringMixin):
    - Builds a concise interest context string from active personas so the
      LLM quality scorer can factor user interests into scores.
 
@@ -20,6 +25,8 @@ from __future__ import annotations
 import logging
 import re
 from typing import TYPE_CHECKING
+
+import numpy as np
 
 if TYPE_CHECKING:
     from app.models.domain import UserPersona
@@ -35,6 +42,8 @@ class InterestFilter:
         self._personas = personas
         self._block_patterns: list[re.Pattern] = []
         self._boost_keywords: list[str] = []
+        self._focus_texts: list[str] = []  # raw text for embedding
+        self._focus_embeddings: np.ndarray | None = None  # lazily computed
 
         for p in personas:
             if p.category == "block_topic" and p.content:
@@ -45,16 +54,34 @@ class InterestFilter:
                 # Extract first meaningful keyword chunk for boosting
                 keywords = [w.strip() for w in p.content.split(",")]
                 self._boost_keywords.extend(keywords)
+                # Keep full text for embedding-based similarity
+                self._focus_texts.append(p.content)
 
     @property
     def has_interests(self) -> bool:
         return bool(self._block_patterns or self._boost_keywords)
 
+    def _ensure_embeddings(self) -> bool:
+        """Lazily compute focus embeddings. Returns True if embeddings are available."""
+        if self._focus_embeddings is not None:
+            return True
+        if not self._focus_texts:
+            return False
+        try:
+            from app.services.rag_service import get_bi_encoder
+            bi_encoder = get_bi_encoder()
+            self._focus_embeddings = bi_encoder.encode(self._focus_texts)
+            logger.debug("Computed %d focus embeddings for interest filter", len(self._focus_texts))
+            return True
+        except Exception as exc:
+            logger.debug("Bi-Encoder not available for interest filter, using keyword fallback: %s", exc)
+            return False
+
     def filter_items(self, items: list["ContentItem"]) -> list["ContentItem"]:
         """
-        Apply keyword pre-filter:
+        Apply pre-filter:
         - Remove items whose title matches any block_topic pattern.
-        - Sort remaining so that items matching boost keywords come first.
+        - Sort remaining so that items matching boost keywords / embeddings come first.
 
         Returns a new list (does not mutate the input).
         """
@@ -74,23 +101,63 @@ class InterestFilter:
         if blocked_count:
             logger.info("Interest filter: blocked %d items via block_topic rules", blocked_count)
 
-        # 2. Boost sort — items matching focus keywords get priority
-        if self._boost_keywords:
-            def _boost_score(item: "ContentItem") -> int:
-                title_lower = (item.title or "").lower()
-                content_lower = (item.content or "")[:200].lower()
-                score = 0
-                for kw in self._boost_keywords:
-                    kw_lower = kw.lower()
-                    if kw_lower in title_lower:
-                        score += 2
-                    elif kw_lower in content_lower:
-                        score += 1
-                return -score  # negative for descending sort
+        # 2. Boost sort — try embedding similarity first, fall back to keywords
+        has_embeddings = self._ensure_embeddings() and self._focus_embeddings is not None
 
-            kept.sort(key=_boost_score)
+        if has_embeddings:
+            kept = self._sort_by_embedding_similarity(kept)
+        elif self._boost_keywords:
+            kept = self._sort_by_keyword_boost(kept)
 
         return kept
+
+    def _sort_by_embedding_similarity(self, items: list["ContentItem"]) -> list["ContentItem"]:
+        """Sort items by cosine similarity to focus embeddings (descending)."""
+        from app.services.rag_service import get_bi_encoder
+        bi_encoder = get_bi_encoder()
+
+        texts = []
+        for item in items:
+            kp_text = " ".join(item.key_points) if hasattr(item, "key_points") and item.key_points else ""
+            texts.append(f"{item.title or ''} {kp_text}")
+
+        if not texts:
+            return items
+
+        item_embeddings = bi_encoder.encode(texts)
+        # Compute max similarity across all focus embeddings for each item
+        scores = []
+        for i, emb in enumerate(item_embeddings):
+            emb_norm = emb / (np.linalg.norm(emb) + 1e-9)
+            max_sim = 0.0
+            for focus_emb in self._focus_embeddings:
+                focus_norm = focus_emb / (np.linalg.norm(focus_emb) + 1e-9)
+                sim = float(np.dot(focus_norm, emb_norm))
+                if sim > max_sim:
+                    max_sim = sim
+            scores.append(-max_sim)  # negative for descending sort
+
+        paired = list(zip(scores, items))
+        paired.sort(key=lambda x: x[0])
+        return [item for _, item in paired]
+
+    def _sort_by_keyword_boost(self, items: list["ContentItem"]) -> list["ContentItem"]:
+        """Sort items by keyword match score (descending)."""
+        def _boost_score(item: "ContentItem") -> int:
+            title_lower = (item.title or "").lower()
+            content_lower = (item.content or "")[:200].lower()
+            score = 0
+            for kw in self._boost_keywords:
+                kw_lower = kw.lower()
+                if kw_lower in title_lower:
+                    score += 2
+                elif kw_lower in content_lower:
+                    score += 1
+            return -score  # negative for descending sort
+
+        items_copy = list(items)
+        items_copy.sort(key=_boost_score)
+        return items_copy
 
     def build_scoring_context(self) -> str:
         """

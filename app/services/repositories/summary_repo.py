@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.models.domain import DailySummary, NewsItem, UserFeedback, ChatMessage, ArticleOverview
+from app.models.domain import DailySummary, NewsItem, UserFeedback, ChatMessage, ArticleOverview, SummaryViewLog
 from app.models.schemas import (
     DailySummaryResponse, HistoryStatItem, SummaryArchiveItem,
     SummaryHistoryResponse, SummaryItem, WeeklyRecapResponse,
@@ -288,6 +288,106 @@ class SummaryRepo:
         statement = select(DailySummary.date).order_by(desc(DailySummary.date)).limit(limit)
         result = await session.execute(statement)
         return list(result.scalars().all())
+
+    # ------------------------------------------------------------------
+    # Viewed tracking (catch-up / digest)
+    # ------------------------------------------------------------------
+
+    async def mark_date_viewed(self, session: AsyncSession, date_str: str) -> None:
+        """Upsert a SummaryViewLog entry for the given date."""
+        stmt = select(SummaryViewLog).where(SummaryViewLog.date == date_str)
+        result = await session.execute(stmt)
+        existing = result.scalar_one_or_none()
+        if not existing:
+            try:
+                session.add(SummaryViewLog(date=date_str))
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+    async def get_unviewed_dates(
+        self, session: AsyncSession, limit: int = 7
+    ) -> list[str]:
+        """Return dates that have a DailySummary but no SummaryViewLog."""
+        from sqlalchemy import not_
+
+        sub = select(SummaryViewLog.date).where(
+            SummaryViewLog.date == DailySummary.date
+        ).correlate(DailySummary).exists()
+
+        stmt = (
+            select(DailySummary.date)
+            .where(not_(sub))
+            .group_by(DailySummary.date)
+            .order_by(desc(DailySummary.date))
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_gap_dates(
+        self, session: AsyncSession, days: int = 7
+    ) -> list[str]:
+        """Return dates within the retention window that have NO DailySummary."""
+        today = datetime.now()
+        all_dates = [
+            (today - timedelta(days=d)).strftime("%Y-%m-%d")
+            for d in range(1, days + 1)
+        ]
+        # Dates that DO have a summary
+        stmt = (
+            select(DailySummary.date)
+            .where(DailySummary.date.in_(all_dates))
+            .group_by(DailySummary.date)
+        )
+        result = await session.execute(stmt)
+        existing_dates = set(result.scalars().all())
+        return sorted([d for d in all_dates if d not in existing_dates])
+
+    async def get_view_status_map(
+        self, session: AsyncSession, limit: int = 14
+    ) -> dict[str, str | None]:
+        """Return {date: viewed_at_iso_or_None} for recent summaries."""
+        stmt = (
+            select(
+                DailySummary.date,
+                SummaryViewLog.viewed_at,
+            )
+            .outerjoin(SummaryViewLog, DailySummary.date == SummaryViewLog.date)
+            .group_by(DailySummary.date)
+            .order_by(desc(DailySummary.date))
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        return {
+            row[0]: row[1].isoformat() if row[1] else None
+            for row in result.all()
+        }
+
+    async def get_cache_overview(
+        self, session: AsyncSession, limit: int = 14
+    ) -> dict:
+        """Return all stored summaries with viewed status for cache viewer."""
+        view_map = await self.get_view_status_map(session, limit=limit)
+        history = await self.get_summary_history(session, limit=limit)
+
+        items = []
+        for arch in history.archive_items:
+            items.append({
+                "date": arch.date,
+                "overview_preview": arch.overview_preview,
+                "news_count": arch.news_count,
+                "source_stats": arch.source_stats,
+                "top_categories": arch.top_categories,
+                "viewed_at": view_map.get(arch.date),
+            })
+
+        unviewed_count = sum(1 for i in items if i["viewed_at"] is None)
+        return {
+            "items": items,
+            "total": len(items),
+            "unviewed_count": unviewed_count,
+        }
 
     async def cleanup_old_data(self, session: AsyncSession, days_to_keep: int = 7) -> int:
         threshold_date = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
