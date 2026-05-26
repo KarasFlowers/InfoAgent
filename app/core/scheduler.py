@@ -294,7 +294,7 @@ async def _async_push_boards(
                             continue
 
                         # Enqueue URLs for background ingestion (RSS items only).
-                        if settings.RAG_BACKGROUND_INGEST_ENABLED:
+                        if settings.RAG_ENABLED and settings.RAG_BACKGROUND_INGEST_ENABLED:
                             from app.services.rag_service import enqueue_for_ingest
                             article_urls = [
                                 item.original_link

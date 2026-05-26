@@ -482,7 +482,7 @@ async def generate_summary(
         # This eliminates the risk of a failed cleanup tainting the request session.
 
         # Enqueue articles for background RAG ingestion
-        if settings.RAG_BACKGROUND_INGEST_ENABLED:
+        if settings.RAG_ENABLED and settings.RAG_BACKGROUND_INGEST_ENABLED:
             from app.services.rag_service import enqueue_for_ingest
             article_urls = [item.original_link for item in summary.top_news if item.original_link]
             fallback = {u: content_fallback[u] for u in article_urls if u in content_fallback}
