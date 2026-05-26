@@ -3,8 +3,9 @@ Simplified Deep Research Agent.
 
 Given a research question, this agent:
 1. Decomposes the question into 2-4 sub-queries (fast LLM call).
-2. For each sub-query, searches the RAG corpus + fetches web results.
-3. Synthesizes all findings into a structured research report (smart LLM call).
+2. For each sub-query, searches the RAG corpus + fetches web results **in parallel**.
+3. Optionally assesses evidence sufficiency and gathers more if gaps exist (max 2 rounds).
+4. Synthesizes all findings into a structured research report (smart LLM call).
 
 No LangGraph, no complex orchestration — just sequential LLM calls with
 the existing RAG pipeline and a simple web search fallback.
@@ -12,6 +13,7 @@ the existing RAG pipeline and a simple web search fallback.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -20,6 +22,10 @@ from app.prompts import get_prompt
 from app.services.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of sufficiency-assessment rounds (each round may add
+# supplementary sub-queries).  0 disables the loop entirely.
+_MAX_SUFFICIENCY_ROUNDS = 2
 
 
 async def research(
@@ -41,13 +47,20 @@ async def research(
     if not sub_queries:
         sub_queries = [question]
 
-    # Step 2: Gather evidence for each sub-query
-    findings = []
-    for sq in sub_queries:
-        evidence = await _gather_evidence(sq, top_k=rag_top_k)
-        findings.append(evidence)
+    # Step 2: Gather evidence for each sub-query **in parallel**
+    findings = await _gather_evidence_parallel(sub_queries, top_k=rag_top_k)
 
-    # Step 3: Synthesize into a report
+    # Step 3 (optional): Assess sufficiency and gather more if needed
+    for _round in range(_MAX_SUFFICIENCY_ROUNDS):
+        gaps = await _assess_sufficiency(question, sub_queries, findings)
+        if not gaps:
+            break
+        logger.info("Sufficiency round %d: %d gap(s) identified", _round + 1, len(gaps))
+        gap_findings = await _gather_evidence_parallel(gaps, top_k=rag_top_k)
+        sub_queries.extend(gaps)
+        findings.extend(gap_findings)
+
+    # Step 4: Synthesize into a report
     report = await _synthesize(question, sub_queries, findings)
 
     return {
@@ -56,6 +69,69 @@ async def research(
         "findings": findings,
         "report": report,
     }
+
+
+async def _gather_evidence_parallel(
+    queries: list[str], *, top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """Gather evidence for multiple queries concurrently."""
+    tasks = [_gather_evidence(sq, top_k=top_k) for sq in queries]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    findings: list[dict[str, Any]] = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.warning("Evidence gathering failed for '%s': %s", queries[i], result)
+            findings.append({"query": queries[i], "sources": [], "summary": "Evidence gathering failed."})
+        else:
+            findings.append(result)
+    return findings
+
+
+async def _assess_sufficiency(
+    question: str,
+    sub_queries: list[str],
+    findings: list[dict[str, Any]],
+) -> list[str]:
+    """Ask the fast LLM whether the gathered evidence is sufficient.
+
+    Returns a list of supplementary sub-query strings to fill identified gaps.
+    Returns an empty list if evidence is deemed sufficient.
+    """
+    findings_summary = "\n".join(
+        f"- Sub-query: {f['query']} → sources: {len(f.get('sources', []))}, "
+        f"summary length: {len(f.get('summary', ''))}"
+        for f in findings
+    )
+    prompt = (
+        f"You are a research quality reviewer.\n"
+        f"Original question: {question}\n"
+        f"Sub-queries explored: {sub_queries}\n"
+        f"Evidence gathered:\n{findings_summary}\n\n"
+        f"Is the evidence sufficient to answer the original question comprehensively?\n"
+        f"If YES, respond with: {{\"sufficient\": true}}\n"
+        f"If NO, respond with: {{\"sufficient\": false, \"gaps\": [\"gap query 1\", \"gap query 2\"]}}\n"
+        f"Limit gaps to at most 2. Respond in JSON only."
+    )
+    try:
+        response = await llm_service.llm.chat(
+            messages=[
+                {"role": "system", "content": "You are a research quality reviewer. Respond only in JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            tier="fast",
+            label="research:sufficiency",
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=300,
+        )
+        data = json.loads(response.choices[0].message.content)
+        if data.get("sufficient", True):
+            return []
+        gaps = data.get("gaps", [])
+        return [str(g).strip() for g in gaps if str(g).strip()][:2]
+    except Exception as exc:
+        logger.debug("Sufficiency assessment failed (treating as sufficient): %s", exc)
+        return []
 
 
 async def _decompose(question: str, max_sub_queries: int) -> list[str]:

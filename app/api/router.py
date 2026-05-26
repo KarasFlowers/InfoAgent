@@ -364,6 +364,11 @@ async def generate_summary(
                 existing_summary.top_news = await rerank_summary_items(existing_summary.top_news, session=session)
             except Exception:
                 logger.debug("Persona reranking skipped (no feedback data or model not loaded)")
+            # Mark date as viewed (catch-up tracking)
+            try:
+                await db_service.mark_date_viewed(session, search_date)
+            except Exception:
+                logger.debug("Viewed tracking skipped for %s", search_date)
             return existing_summary
 
     # If it's a historical date and not in DB, we don't generate (to save costs/avoid confusion)
@@ -489,6 +494,11 @@ async def generate_summary(
             final.top_news = await rerank_summary_items(final.top_news, session=session)
         except Exception:
             logger.debug("Persona reranking skipped for fresh summary")
+        # Mark date as viewed (catch-up tracking)
+        try:
+            await db_service.mark_date_viewed(session, search_date)
+        except Exception:
+            logger.debug("Viewed tracking skipped for %s", search_date)
         return final
 
 
@@ -1063,3 +1073,132 @@ async def get_weekly_report(
         raise HTTPException(status_code=500, detail="Failed to generate weekly report.")
 
     return report
+
+
+# ---------------------------------------------------------------------------
+# Catch-up Digest & Cache Viewer
+# ---------------------------------------------------------------------------
+
+
+@api_router.get("/catchup/status")
+async def get_catchup_status(
+    board: Optional[str] = None,
+    max_days: int = 7,
+    session: AsyncSession = Depends(get_session),
+):
+    """Lightweight check: how many days are unviewed or missing summaries."""
+    safe_days = max(1, min(max_days, 30))
+    await _resolve_board(session, board)  # validate slug
+
+    unviewed = await db_service.get_unviewed_dates(session, limit=safe_days)
+    gaps = await db_service.get_gap_dates(session, days=safe_days)
+
+    return {
+        "unviewed_dates": unviewed,
+        "gap_dates": gaps,
+        "unviewed_count": len(unviewed),
+        "gap_count": len(gaps),
+        "earliest_unviewed": unviewed[-1] if unviewed else None,
+    }
+
+
+@api_router.post("/catchup")
+async def generate_catchup_digest(
+    board: Optional[str] = None,
+    max_days: int = 7,
+    session: AsyncSession = Depends(get_session),
+):
+    """Backfill gap days + generate a condensed digest of all unread content."""
+    from datetime import timedelta, timezone as _tz
+
+    safe_days = max(1, min(max_days, 14))
+    board_obj = await _resolve_board(session, board)
+    board_id = board_obj.id if board_obj else None
+
+    if not board_obj:
+        raise HTTPException(status_code=500, detail="No board configured.")
+
+    unviewed = await db_service.get_unviewed_dates(session, limit=safe_days)
+    gaps = await db_service.get_gap_dates(session, days=safe_days)
+
+    backfilled_dates: list[str] = []
+
+    # Step 2: Backfill gap dates by expanding the scraper window
+    if gaps:
+        earliest_gap = gaps[0]
+        now = datetime.now(_tz.utc)
+        try:
+            earliest_dt = datetime.strptime(earliest_gap, "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        except ValueError:
+            earliest_dt = now
+        since_hours = max(24, int((now - earliest_dt).total_seconds() / 3600))
+
+        try:
+            from app.services.source_adapters import get_adapter, UnknownSourceTypeError
+            adapter = get_adapter(board_obj.source_type)
+            summary, content_fallback = await adapter.produce(
+                board=board_obj,
+                session=session,
+                since_hours=since_hours,
+            )
+            if summary:
+                # Save the backfilled summary for the latest gap date
+                summary.date = earliest_gap
+                try:
+                    await db_service.save_summary(session, summary, board_id=board_id)
+                    backfilled_dates.append(earliest_gap)
+                except IntegrityError:
+                    await session.rollback()
+                    logger.warning("Backfill summary already exists for %s", earliest_gap)
+                except Exception:
+                    logger.exception("Failed to save backfill for %s", earliest_gap)
+                    await session.rollback()
+        except UnknownSourceTypeError as error:
+            logger.error("Catchup backfill: unsupported source_type '%s': %s", board_obj.source_type, error)
+        except Exception:
+            logger.exception("Catchup backfill failed for board '%s'", board_obj.slug)
+
+    # Step 3: Collect all unviewed summaries
+    all_dates = sorted(set(unviewed + backfilled_dates))
+    summaries_data: list[dict] = []
+    for d in all_dates:
+        full = await db_service.get_summary_by_date(session, d, board_id=board_id)
+        if full:
+            summaries_data.append(full.model_dump())
+
+    if not summaries_data:
+        return {
+            "digest": None,
+            "dates_covered": [],
+            "backfilled_dates": backfilled_dates,
+            "total_items": 0,
+            "message": "No unread content to digest.",
+        }
+
+    # Step 4: Generate condensed digest
+    digest = await llm_service.generate_catchup_digest(summaries_data)
+
+    # Step 5: Mark all covered dates as viewed
+    for d in all_dates:
+        try:
+            await db_service.mark_date_viewed(session, d)
+        except Exception:
+            pass
+
+    return {
+        "digest": digest.model_dump() if digest else None,
+        "dates_covered": all_dates,
+        "backfilled_dates": backfilled_dates,
+        "total_items": len(digest.top_news) if digest else 0,
+    }
+
+
+@api_router.get("/cache")
+async def get_cache_overview(
+    limit: int = 14,
+    board: Optional[str] = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """All stored summaries with viewed status for cache viewer."""
+    safe_limit = max(1, min(limit, 30))
+    return await db_service.get_cache_overview(session, limit=safe_limit)
