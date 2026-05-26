@@ -49,12 +49,12 @@ async def lifespan(app: FastAPI):
     # Start APScheduler (handles periodic cleanup + future jobs)
     await start_scheduler()
 
-    # Pre-warm ChromaDB and load existing collections
+    # Pre-warm ChromaDB and load existing collections (no-op if RAG disabled)
     rag_service.init_chroma()
 
     # Start background ingest workers
     worker_tasks: list[asyncio.Task] = []
-    if settings.RAG_BACKGROUND_INGEST_ENABLED:
+    if settings.RAG_ENABLED and settings.RAG_BACKGROUND_INGEST_ENABLED:
         for i in range(settings.RAG_BACKGROUND_INGEST_WORKERS):
             task = asyncio.create_task(rag_service.ingest_worker_loop(worker_id=i))
             worker_tasks.append(task)
@@ -118,7 +118,7 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(api_router, prefix="/api/v1")
-app.include_router(rag_router, prefix="/api/v1")
+app.include_router(rag_router, prefix="/api/v1")  # RAG endpoints return 503 when disabled
 
 # Mount Static Files and Templates
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

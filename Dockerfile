@@ -11,10 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt requirements-rag.txt ./
+
+ARG RAG_ENABLED=true
 
 # Install dependencies into a separate directory to keep image clean
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt \
+    && if [ "$RAG_ENABLED" = "true" ]; then pip install --no-cache-dir --prefix=/install -r requirements-rag.txt; fi
 
 # --- Stage 2: Final Image ---
 FROM python:3.13-slim
@@ -31,12 +34,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /install /usr/local
 
 # Pre-warm sentence-transformers weights so the first user request is fast.
-# The models are the exact ones used by app/services/rag_service.py.
+# Skipped entirely when RAG_ENABLED=false to save ~2GB of downloads.
+ARG RAG_ENABLED=true
 ENV HF_HOME=/opt/hf-cache \
     SENTENCE_TRANSFORMERS_HOME=/opt/hf-cache \
     TRANSFORMERS_OFFLINE=0
-RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('BAAI/bge-m3'); CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')" \
-    && chown -R appuser:appuser /opt/hf-cache
+RUN if [ "$RAG_ENABLED" = "true" ]; then \
+        python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('BAAI/bge-m3'); CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')" \
+        && mkdir -p /opt/hf-cache && chown -R appuser:appuser /opt/hf-cache; \
+    else \
+        mkdir -p /opt/hf-cache && chown -R appuser:appuser /opt/hf-cache; \
+    fi
 
 # Copy the rest of the application
 COPY --chown=appuser:appuser . .

@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     # Notification channels to enable (comma-separated: email,webhook,bark,telegram)
     NOTIFY_CHANNELS: str = "email"
     
+    # RAG Feature Toggle (set to false to skip heavy model downloads)
+    RAG_ENABLED: bool = True
+
     # RAG Vector Store
     CHROMA_DB_DIR: str = "./data/chroma"
 

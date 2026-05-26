@@ -14,16 +14,21 @@ import time
 
 
 def main() -> int:
+    import os
     print("=" * 50)
     print("  Argos — Model Pre-Download")
     print("=" * 50)
     print()
 
+    if os.environ.get("RAG_ENABLED", "true").lower() in ("false", "0", "no"):
+        print("[SKIP] RAG_ENABLED=false — model download not required.")
+        return 0
+
     try:
         from sentence_transformers import SentenceTransformer, CrossEncoder
     except ImportError:
         print("[ERROR] sentence-transformers is not installed.")
-        print("  Run: pip install -r requirements.txt")
+        print("  Run: pip install -r requirements-rag.txt")
         return 1
 
     models = [
