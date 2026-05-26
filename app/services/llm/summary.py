@@ -1,6 +1,7 @@
 """Daily summary generation (RSS-based and pure-LLM)."""
 import json
 import logging
+import re
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,31 @@ from app.services.db_service import db_service
 from app.services.llm.client import CircuitOpenError
 
 logger = logging.getLogger(__name__)
+
+
+def _repair_json(text: str) -> str:
+    """Attempt lightweight JSON repair for common LLM output issues.
+
+    Handles:
+    - Trailing commas before ``}`` or ``]``
+    - Unescaped newlines inside strings
+    - Missing closing brackets
+    """
+    # Remove trailing commas before } or ]
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+    # Replace unescaped newlines inside string values with spaces
+    text = re.sub(r'(?<!\\)\n(?=[^"]*"[^"]*$)', ' ', text)
+    # Try to balance brackets: count opens vs closes
+    opens = text.count('{') + text.count('[')
+    closes = text.count('}') + text.count(']')
+    while closes < opens:
+        # Heuristic: add closing brackets at the end
+        if text.count('{') > text.count('}'):
+            text += '}'
+        elif text.count('[') > text.count(']'):
+            text += ']'
+        closes += 1
+    return text
 
 
 def _get_editor_prompt() -> str:
@@ -89,6 +115,7 @@ class SummaryMixin:
         session: AsyncSession | None = None,
         one_time_preference: str | None = None,
         board=None,
+        skip_recent_dedup: bool = False,
     ) -> tuple[DailySummaryResponse | None, dict[str, str]]:
         """
         Core summary pipeline accepting unified ContentItem list.
@@ -134,6 +161,7 @@ class SummaryMixin:
         system_prompt = base_prompt + schema_suffix
 
         persona_context = ""
+        personas = []
         if session:
             try:
                 personas = await db_service.get_active_personas(session, board_id=board_id)
@@ -176,15 +204,13 @@ class SummaryMixin:
                 persona_context = "\n\nUSER PERSONALITY & PREFERENCE GUIDELINES:\n"
             persona_context += f"- [Today Only] {one_time_preference}\n"
 
-        # ---- Interest-based pre-filter ----
+        # ---- Interest-based pre-filter (reuses personas fetched above) ----
         from app.services.interest_filter import build_interest_filter
 
         interest_filter = None
-        if session:
+        if personas:
             try:
-                personas = await db_service.get_active_personas(session, board_id=board_id)
-                if personas:
-                    interest_filter = build_interest_filter(personas)
+                interest_filter = build_interest_filter(personas)
             except Exception as err:
                 logger.warning("Failed to build interest filter: %s", err)
 
@@ -243,7 +269,8 @@ class SummaryMixin:
             )
 
         # Remove articles already shown in the last 3 days
-        if session:
+        # (skip for catch-up backfill — we WANT those articles)
+        if session and not skip_recent_dedup:
             try:
                 recent_urls = await db_service.get_recent_article_urls(
                     session, board_id=board_id, days=3
@@ -319,7 +346,17 @@ class SummaryMixin:
             )
             logger.info("LLM summary response received")
 
-            parsed_json = json.loads(response.choices[0].message.content)
+            raw_content = response.choices[0].message.content
+            try:
+                parsed_json = json.loads(raw_content)
+            except json.JSONDecodeError:
+                # Lightweight repair + single retry
+                logger.warning("JSON parse failed, attempting repair...")
+                repaired = _repair_json(raw_content)
+                try:
+                    parsed_json = json.loads(repaired)
+                except json.JSONDecodeError:
+                    raise  # will be caught by outer except → fallback
             top_news = parsed_json.get("top_news", [])
             stats = {}
             for item in top_news:
