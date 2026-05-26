@@ -132,6 +132,9 @@ def _run_cleanup() -> None:
 async def _async_cleanup() -> None:
     from app.core.db import AsyncSessionLocal
     from app.services.db_service import db_service
+    from app.models.domain import TaskRun
+    from sqlalchemy import select as _sel
+    from datetime import timedelta
 
     async with track_task_run("cleanup") as tr:
         tr.progress_label = "deleting old summaries"
@@ -140,6 +143,23 @@ async def _async_cleanup() -> None:
                 session, days_to_keep=settings.HISTORY_DAYS_TO_KEEP
             )
             logger.info("Scheduled cleanup removed %s old summaries", deleted)
+
+            # Mark stale TaskRun entries that have been "running" for over 2 hours
+            stale_cutoff = datetime.now(UTC) - timedelta(hours=2)
+            stale_stmt = _sel(TaskRun).where(
+                TaskRun.status == "running",
+                TaskRun.started_at < stale_cutoff,
+            )
+            stale_result = await session.execute(stale_stmt)
+            stale_tasks = stale_result.scalars().all()
+            for stale in stale_tasks:
+                stale.status = "failed"
+                stale.error_summary = "Timed out (stale)"
+                stale.finished_at = datetime.now(UTC)
+            if stale_tasks:
+                await session.commit()
+                logger.info("Marked %d stale TaskRun(s) as failed", len(stale_tasks))
+
             tr.progress_total = 1
             tr.progress_current = 1
 

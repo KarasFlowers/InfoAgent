@@ -272,3 +272,15 @@ class DailyReportRefinementSession(SQLModel, table=True):
     error_message: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     finished_at: Optional[datetime] = Field(default=None)
+
+
+# ---------------------------------------------------------------------------
+# Catch-up / Digest Viewed Tracking
+# ---------------------------------------------------------------------------
+
+
+class SummaryViewLog(SQLModel, table=True):
+    """Tracks which summary dates the user has viewed (global, not per-board)."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    date: str = Field(index=True, unique=True)        # YYYY-MM-DD
+    viewed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
