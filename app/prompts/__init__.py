@@ -42,26 +42,33 @@ def _load_template_cached(key: str):
     return _env.get_template(key)
 
 
-def get_prompt(key: str, **variables: Any) -> str:
+def get_prompt(key: str, *, required: bool = True, **variables: Any) -> str:
     """Load and render a prompt template.
 
     Args:
         key: Template name without extension (e.g. "daily_briefing").
+        required: If ``True`` (default), raise on missing template (fail-fast).
+            If ``False``, log a warning and return ``""`` — useful for optional
+            enhancement prompts that should not break the pipeline.
         **variables: Jinja2 template variables.
 
     Returns:
-        Rendered prompt string.
+        Rendered prompt string, or ``""`` if *required* is False and the
+        template is missing.
 
     Raises:
-        FileNotFoundError: If no matching .md file exists.
+        FileNotFoundError: If *required* is True and no matching .md file exists.
     """
     try:
         template = _load_template_cached(key)
         return template.render(**variables)
     except TemplateNotFound:
-        raise FileNotFoundError(
-            f"Prompt template '{key}' not found at {_PROMPTS_DIR / f'{key}.md'}"
-        )
+        if required:
+            raise FileNotFoundError(
+                f"Prompt template '{key}' not found at {_PROMPTS_DIR / f'{key}.md'}"
+            )
+        logger.warning("Optional prompt template '%s' not found, returning empty string", key)
+        return ""
 
 
 __all__ = ["get_prompt"]

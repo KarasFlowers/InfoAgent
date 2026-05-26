@@ -10,6 +10,7 @@ import logging
 
 from app.core.config import settings
 from app.services.llm.client import LLMClient
+from app.services.llm.catchup import CatchupMixin
 from app.services.llm.scoring import ScoringMixin
 from app.services.llm.summary import SummaryMixin
 from app.services.llm.weekly import WeeklyMixin
@@ -18,7 +19,7 @@ from app.services.llm.wizard import WizardMixin
 logger = logging.getLogger(__name__)
 
 
-class LLMService(ScoringMixin, SummaryMixin, WeeklyMixin, WizardMixin):
+class LLMService(CatchupMixin, ScoringMixin, SummaryMixin, WeeklyMixin, WizardMixin):
     def __init__(self) -> None:
         self._llm: LLMClient | None = None
 

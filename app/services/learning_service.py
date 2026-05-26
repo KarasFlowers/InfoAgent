@@ -19,12 +19,12 @@ from app.models.domain import UserFeedback, NewsItem
 from app.core.db import AsyncSessionLocal
 
 
-def _normalize_vector(vector: np.ndarray) -> np.ndarray:
-    """Normalize a vector for cosine similarity use."""
+def _normalize_vector(vector: np.ndarray) -> np.ndarray | None:
+    """Normalize a vector for cosine similarity use. Returns None for zero vectors."""
     norm = np.linalg.norm(vector)
     if norm > 0:
         return vector / norm
-    return vector
+    return None
 
 
 async def record_feedback(url: str, sentiment: int) -> bool:
@@ -269,10 +269,13 @@ async def rerank_summary_items(items: list, session: AsyncSession | None = None)
         # Vector-based score
         if has_vectors:
             emb = _normalize_vector(embeddings[i])
-            if positive_centroid is not None:
-                score += float(np.dot(positive_centroid, emb)) * 0.7
-            if negative_centroid is not None:
-                score -= float(np.dot(negative_centroid, emb)) * 0.3
+            if emb is None:
+                pass  # skip scoring for zero-vector items
+            elif positive_centroid is not None or negative_centroid is not None:
+                if positive_centroid is not None:
+                    score += float(np.dot(positive_centroid, emb)) * 0.7
+                if negative_centroid is not None:
+                    score -= float(np.dot(negative_centroid, emb)) * 0.3
 
         # Explicit preference adjustments
         item_cat = (item.category or "").lower()
