@@ -9,14 +9,16 @@ Endpoints:
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
+from app.core.config import settings
 from app.core.url_safety import validate_public_url
 from app.services.chat_history_service import get_chat_history
 from app.services.learning_service import record_feedback
 from app.services.rag_service import (
+    is_rag_available,
     _ingested_urls,
     _prepare_overview_context,
     get_ingest_status,
@@ -28,6 +30,22 @@ from app.services.rag_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _require_rag_enabled():
+    """FastAPI dependency: reject requests with 503 when RAG is disabled."""
+    if not settings.RAG_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="RAG feature is disabled. Set RAG_ENABLED=true to enable.",
+        )
+    if not is_rag_available():
+        raise HTTPException(
+            status_code=503,
+            detail="RAG dependencies not installed. Run: pip install -r requirements-rag.txt",
+        )
+
+
 rag_router = APIRouter(prefix="/rag", tags=["RAG"])
 
 
@@ -71,7 +89,22 @@ class GlobalQueryRequest(BaseModel):
     max_results: int = Field(default=10, ge=1, le=30)
 
 
-@rag_router.get("/ingest_status")
+@rag_router.get("/enabled")
+async def rag_enabled_status():
+    """Check whether RAG feature is enabled and available."""
+    available = is_rag_available()
+    return {
+        "enabled": settings.RAG_ENABLED,
+        "available": available,
+        "message": (
+            "RAG is ready." if available
+            else "RAG is disabled." if not settings.RAG_ENABLED
+            else "RAG dependencies not installed. Run: pip install -r requirements-rag.txt"
+        ),
+    }
+
+
+@rag_router.get("/ingest_status", dependencies=[Depends(_require_rag_enabled)])
 async def check_ingest_status(url: AnyHttpUrl = Query(...)):
     """Return the background ingestion status for a URL."""
     status = get_ingest_status(str(url))
@@ -80,7 +113,7 @@ async def check_ingest_status(url: AnyHttpUrl = Query(...)):
     return status
 
 
-@rag_router.post("/ingest")
+@rag_router.post("/ingest", dependencies=[Depends(_require_rag_enabled)])
 async def ingest_article(req: IngestRequest):
     """
     Smart ingest endpoint (fallback for background pipeline).
@@ -130,7 +163,7 @@ async def ingest_article(req: IngestRequest):
         raise HTTPException(status_code=500, detail="Failed to ingest article.")
 
 
-@rag_router.post("/overview")
+@rag_router.post("/overview", dependencies=[Depends(_require_rag_enabled)])
 async def fetch_article_overview(req: PublicUrlRequest):
     """Generate a richer overview for the article before interactive questioning."""
     url = str(req.url)
@@ -176,7 +209,7 @@ async def fetch_article_overview(req: PublicUrlRequest):
         raise HTTPException(status_code=500, detail="Failed to generate article overview.")
 
 
-@rag_router.post("/query")
+@rag_router.post("/query", dependencies=[Depends(_require_rag_enabled)])
 async def query_article(req: QueryRequest):
     """
     Run the two-stage RAG pipeline (Bi-Encoder recall -> Cross-Encoder rerank -> DeepSeek stream).
@@ -205,7 +238,7 @@ async def query_article(req: QueryRequest):
     )
 
 
-@rag_router.get("/history")
+@rag_router.get("/history", dependencies=[Depends(_require_rag_enabled)])
 async def fetch_chat_history(url: AnyHttpUrl = Query(...)):
     """
     Retrieve existing chat history for a URL.
@@ -231,7 +264,7 @@ async def fetch_chat_history(url: AnyHttpUrl = Query(...)):
         raise HTTPException(status_code=500, detail="Failed to fetch chat history.")
 
 
-@rag_router.post("/feedback")
+@rag_router.post("/feedback", dependencies=[Depends(_require_rag_enabled)])
 async def submit_feedback(req: FeedbackRequest):
     """
     Record explicit user feedback (Like/Dislike) for an article.
@@ -249,7 +282,7 @@ async def submit_feedback(req: FeedbackRequest):
         raise HTTPException(status_code=500, detail="Failed to record feedback.")
 
 
-@rag_router.post("/query/global")
+@rag_router.post("/query/global", dependencies=[Depends(_require_rag_enabled)])
 async def query_global(req: GlobalQueryRequest):
     """
     Cross-article RAG query: search all ingested articles and stream an answer.

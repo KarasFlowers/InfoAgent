@@ -18,7 +18,6 @@ import httpx
 import trafilatura
 from bs4 import BeautifulSoup
 import numpy as np
-from rank_bm25 import BM25Okapi
 from app.core.config import settings
 from app.core.url_safety import ensure_public_url_target
 from app.core.db import AsyncSessionLocal
@@ -27,6 +26,8 @@ from sqlalchemy.future import select
 
 # All mutable state and model loaders live in _state.py
 from app.services.rag._state import (  # noqa: F401
+    is_rag_available,
+    _require_rag,
     get_bi_encoder,
     get_cross_encoder,
     init_chroma,
@@ -125,7 +126,8 @@ async def ingest_worker_loop(worker_id: int = 0) -> None:
             _ingest_queue.task_done()
 
 
-def _build_bm25_index(chunks: list[str]) -> tuple[BM25Okapi, list[str]]:
+def _build_bm25_index(chunks: list[str]) -> tuple:
+    from rank_bm25 import BM25Okapi
     tokenized = [chunk.lower().split() for chunk in chunks]
     return BM25Okapi(tokenized), chunks
 
@@ -141,7 +143,7 @@ def _load_collection_chunks(url: str) -> list[str]:
     return [doc for doc in documents if isinstance(doc, str) and doc.strip()]
 
 
-def _ensure_bm25_index(url: str) -> tuple[BM25Okapi, list[str]] | None:
+def _ensure_bm25_index(url: str) -> tuple | None:
     existing = _bm25_indices.get(url)
     if existing:
         return existing

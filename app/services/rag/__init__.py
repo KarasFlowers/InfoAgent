@@ -5,6 +5,8 @@ All public names are re-exported from ``_core`` so that existing
 imports via the facade at ``app.services.rag_service`` keep working.
 """
 from app.services.rag._core import (  # noqa: F401
+    is_rag_available,
+    _require_rag,
     get_bi_encoder,
     get_cross_encoder,
     init_chroma,
@@ -31,6 +33,8 @@ from app.services.rag._core import (  # noqa: F401
 )
 
 __all__ = [
+    "is_rag_available",
+    "_require_rag",
     "get_bi_encoder",
     "get_cross_encoder",
     "init_chroma",
