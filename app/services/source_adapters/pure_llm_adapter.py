@@ -28,6 +28,7 @@ class PureLLMAdapter(SourceAdapter):
         board: "Board",
         session: AsyncSession,
         one_time_preference: str | None = None,
+        since_hours: int = 24,  # noqa: ARG002 — pure LLM has no date filter
     ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
         # Lazy-import to avoid circulars.
         from app.services.llm_service import llm_service

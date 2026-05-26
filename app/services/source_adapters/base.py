@@ -32,8 +32,13 @@ class SourceAdapter(ABC):
         board: "Board",
         session: AsyncSession,
         one_time_preference: str | None = None,
+        since_hours: int = 24,
     ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
         """Produce today's summary for this board.
+
+        Args:
+            since_hours: How many hours back to look for content.
+                Default 24 (today); set higher for catch-up backfill.
 
         Returns:
             (summary_or_none, content_fallback) where content_fallback maps

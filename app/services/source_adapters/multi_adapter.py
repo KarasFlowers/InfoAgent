@@ -53,6 +53,7 @@ class MultiSourceAdapter(SourceAdapter):
         board: "Board",
         session: AsyncSession,
         one_time_preference: str | None = None,
+        since_hours: int = 24,
     ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
         config = board.source_config or {}
 
@@ -64,7 +65,7 @@ class MultiSourceAdapter(SourceAdapter):
             )
             return None, {}
 
-        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
 
         all_items: list[ContentItem] = []
 

@@ -30,6 +30,7 @@ class RedditAdapter(SourceAdapter):
         board: "Board",
         session: AsyncSession,
         one_time_preference: str | None = None,
+        since_hours: int = 24,
     ) -> "tuple[DailySummaryResponse | None, dict[str, str]]":
         from app.core.http_client import get_http_client
         from app.scrapers.reddit import RedditScraper
@@ -45,7 +46,7 @@ class RedditAdapter(SourceAdapter):
             ),
         }
 
-        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
 
         client = get_http_client()
         scraper = RedditScraper(scraper_config, client)
