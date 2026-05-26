@@ -4,6 +4,7 @@ let isIngesting = false;
 let currentQueryController = null;
 let currentOverviewController = null;
 let latestHistoryArchive = [];
+let historyViewStatus = {};  // date -> viewed_at | null
 let currentBoardSlug = null;
 let availableBoards = [];
 let availablePromptTemplates = [];
@@ -30,6 +31,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     fetchSummary();
     setupRagPanel();
     setupHistoryPanel();
+    _refreshCatchupBadge();
 });
 
 function _initTheme() {
@@ -137,9 +139,10 @@ async function initBoards() {
 function renderBoardTabs() {
     const container = document.getElementById('board-tabs');
     let html = '';
-    for (const b of availableBoards) {
+    for (let i = 0; i < availableBoards.length; i++) {
+        const b = availableBoards[i];
         const isActive = b.slug === currentBoardSlug ? 'active' : '';
-        html += `<div class="board-tab-wrapper ${isActive}">
+        html += `<div class="board-tab-wrapper ${isActive}" draggable="true" data-slug="${b.slug}" data-index="${i}">
             <button class="board-tab" onclick="switchBoard('${b.slug}')">
                 ${b.icon} ${b.name}
             </button>
@@ -148,6 +151,75 @@ function renderBoardTabs() {
     }
     html += `<button class="board-add-btn" onclick="openBoardModal()" title="新建板块">➕ 添加板块</button>`;
     container.innerHTML = html;
+    
+    _setupBoardDragAndDrop(container);
+}
+
+function _setupBoardDragAndDrop(container) {
+    let draggedItem = null;
+
+    const items = container.querySelectorAll('.board-tab-wrapper');
+    items.forEach(item => {
+        item.addEventListener('dragstart', (e) => {
+            draggedItem = item;
+            e.dataTransfer.effectAllowed = 'move';
+            item.classList.add('dragging');
+        });
+
+        item.addEventListener('dragend', () => {
+            item.classList.remove('dragging');
+            draggedItem = null;
+        });
+
+        item.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (item !== draggedItem) {
+                const rect = item.getBoundingClientRect();
+                const mid = rect.left + rect.width / 2;
+                if (e.clientX < mid) {
+                    item.parentNode.insertBefore(draggedItem, item);
+                } else {
+                    item.parentNode.insertBefore(draggedItem, item.nextSibling);
+                }
+            }
+        });
+
+        item.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            // Collect new order
+            const wrappers = container.querySelectorAll('.board-tab-wrapper');
+            const newOrder = [];
+            wrappers.forEach((w, index) => {
+                newOrder.push({
+                    slug: w.dataset.slug,
+                    display_order: index
+                });
+            });
+            
+            // Optimistically update local array
+            const boardMap = {};
+            availableBoards.forEach(b => boardMap[b.slug] = b);
+            availableBoards = newOrder.map(o => {
+                const b = boardMap[o.slug];
+                b.display_order = o.display_order;
+                return b;
+            });
+            
+            // Send requests to backend
+            try {
+                await Promise.all(newOrder.map(o => 
+                    fetch(`/api/v1/boards/${o.slug}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ display_order: o.display_order })
+                    })
+                ));
+            } catch (err) {
+                console.error('Failed to save new board order', err);
+            }
+        });
+    });
 }
 
 function switchBoard(slug) {
@@ -176,6 +248,77 @@ function switchBoard(slug) {
 let wizardMessages = [];           // conversation history
 let wizardLastConfig = null;       // most recent suggested config
 let wizardIsLoading = false;
+
+async function loadPromptTemplates() {
+    try {
+        const res = await fetch('/api/v1/boards/prompts/templates');
+        if (res.ok) {
+            const data = await res.json();
+            availablePromptTemplates = data.templates || [];
+            _populatePromptDropdown();
+        }
+    } catch (e) {
+        console.error('Failed to load prompt templates', e);
+    }
+}
+
+function _populatePromptDropdown() {
+    const select = document.getElementById('board-prompt-key');
+    if (!select || availablePromptTemplates.length === 0) return;
+    
+    select.innerHTML = '';
+    for (const tpl of availablePromptTemplates) {
+        const opt = document.createElement('option');
+        opt.value = tpl;
+        opt.textContent = tpl + (tpl === 'daily_briefing' ? ' (默认)' : '');
+        select.appendChild(opt);
+    }
+}
+
+function toggleAdvancedSettings(btn) {
+    btn.classList.toggle('open');
+    const panel = document.getElementById('board-advanced-settings');
+    if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+    } else {
+        panel.style.display = 'none';
+    }
+}
+
+const PRESET_TEMPLATES = {
+    python_dev: {
+        slug: 'python-dev',
+        name: 'Python 开发',
+        icon: '🐍',
+        source_type: 'github',
+        source_config: { repos: [{owner: 'python', repo: 'cpython'}, {owner: 'pallets', repo: 'flask'}] },
+        system_prompt: '你是一个资深的 Python 开发者，请帮我总结这些 Python 相关的最新动态。'
+    },
+    ai_research: {
+        slug: 'ai-research',
+        name: 'AI 研究',
+        icon: '🤖',
+        source_type: 'hackernews',
+        source_config: { fetch_top_stories: 40, min_score: 150 },
+        system_prompt: '请从 HN 热帖中筛选出与 AI、大模型、机器学习相关的论文和项目进行总结。'
+    },
+    indie_hacker: {
+        slug: 'indie-hacker',
+        name: '独立开发者',
+        icon: '💻',
+        source_type: 'reddit',
+        source_config: { subreddits: [{subreddit: 'SaaS', sort: 'hot', min_score: 50}], fetch_comments: 10 },
+        system_prompt: '关注独立开发、SaaS、产品营销相关的讨论，总结出有价值的商业洞察。'
+    }
+};
+
+function applyPresetTemplate(presetKey) {
+    const tpl = PRESET_TEMPLATES[presetKey];
+    if (!tpl) return;
+    
+    wizardLastConfig = tpl;
+    applyWizardConfig();
+}
 
 function switchBoardMode(mode) {
     // Toggle active tab
@@ -1459,7 +1602,23 @@ async function loadHistoryData(target = 'history') {
 
         const historyData = await response.json();
         latestHistoryArchive = Array.isArray(historyData.archive_items) ? historyData.archive_items : [];
-        
+
+        // Fetch viewed status for history items
+        try {
+            let cacheUrl = '/api/v1/cache';
+            if (currentBoardSlug) cacheUrl += `?board=${encodeURIComponent(currentBoardSlug)}`;
+            const cacheResp = await fetch(cacheUrl);
+            if (cacheResp.ok) {
+                const cacheData = await cacheResp.json();
+                historyViewStatus = {};
+                if (Array.isArray(cacheData.items)) {
+                    cacheData.items.forEach(it => {
+                        historyViewStatus[it.date] = it.viewed_at;
+                    });
+                }
+            }
+        } catch (_) { /* non-critical */ }
+
         // Dispatch to both
         renderHistoryInsights(historyData.weekly_recap || null);
 
@@ -1478,6 +1637,8 @@ async function loadHistoryData(target = 'history') {
             const item = document.createElement('button');
             item.type = 'button';
             item.className = 'history-item';
+            const isUnviewed = !historyViewStatus[entry.date];
+            if (isUnviewed) item.classList.add('history-item--unviewed');
             if (latestData && latestData.date === entry.date) {
                 item.classList.add('active');
             }
@@ -1491,6 +1652,13 @@ async function loadHistoryData(target = 'history') {
             const dateSpan = document.createElement('span');
             dateSpan.className = 'history-date';
             dateSpan.textContent = formatSummaryDate(entry.date);
+
+            if (isUnviewed) {
+                const dot = document.createElement('span');
+                dot.className = 'unviewed-dot';
+                dot.title = '未读';
+                dateSpan.appendChild(dot);
+            }
 
             const countSpan = createArchiveMeta(`${entry.news_count || 0} 条资讯`, 'history-count');
             topRow.appendChild(dateSpan);
@@ -2670,5 +2838,154 @@ async function deleteSourceFeed(index) {
     } catch (e) {
         alert('删除失败: ' + e.message);
     }
+}
+
+
+// -----------------------------------------------------------------------
+// Catch-up Digest (精炼补读)
+// -----------------------------------------------------------------------
+
+async function _refreshCatchupBadge() {
+    try {
+        let url = '/api/v1/catchup/status';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const count = (data.unviewed_count || 0) + (data.gap_count || 0);
+        const badge = document.getElementById('catchup-badge');
+        if (badge) {
+            if (count > 0) {
+                badge.textContent = count;
+                badge.style.display = 'inline';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+    } catch (_) { /* non-critical */ }
+}
+
+function toggleCatchupPanel() {
+    const panel = document.getElementById('catchup-modal');
+    panel.classList.toggle('active');
+    if (panel.classList.contains('active')) {
+        _loadCatchupStatus();
+    }
+}
+
+async function _loadCatchupStatus() {
+    const statusEl = document.getElementById('catchup-status');
+    const genBtn = document.getElementById('catchup-gen-btn');
+    if (!statusEl) return;
+
+    try {
+        let url = '/api/v1/catchup/status';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('Failed');
+        const data = await resp.json();
+
+        const unviewed = data.unviewed_count || 0;
+        const gaps = data.gap_count || 0;
+        const total = unviewed + gaps;
+
+        if (total === 0) {
+            statusEl.innerHTML = '<p class="catchup-placeholder">所有内容都已阅读，无需补读 ✅</p>';
+            if (genBtn) genBtn.style.display = 'none';
+        } else {
+            let msg = '';
+            if (unviewed > 0) msg += `${unviewed} 天未读`;
+            if (gaps > 0) msg += `${unviewed > 0 ? ' + ' : ''}${gaps} 天未采集`;
+            statusEl.innerHTML = `<p class="catchup-status-text">${msg} 的内容待补读</p>`;
+            if (genBtn) genBtn.style.display = '';
+        }
+    } catch (_) {
+        statusEl.innerHTML = '<p class="catchup-placeholder">检查未读状态失败</p>';
+    }
+}
+
+async function triggerCatchupDigest() {
+    const contentEl = document.getElementById('catchup-content');
+    const genBtn = document.getElementById('catchup-gen-btn');
+    const statusEl = document.getElementById('catchup-status');
+
+    if (!contentEl) return;
+
+    // Show loading
+    contentEl.innerHTML = '<p class="catchup-placeholder">AI 编辑正在精炼未读内容，请稍候...</p>';
+    if (genBtn) {
+        genBtn.disabled = true;
+        genBtn.textContent = '生成中...';
+    }
+
+    try {
+        let url = '/api/v1/catchup';
+        if (currentBoardSlug) url += `?board=${encodeURIComponent(currentBoardSlug)}`;
+        const resp = await fetch(url, { method: 'POST' });
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            throw new Error(errData.detail || 'Failed');
+        }
+        const data = await resp.json();
+
+        if (!data.digest) {
+            contentEl.innerHTML = '<p class="catchup-placeholder">没有可补读的内容。</p>';
+        } else {
+            const digestData = data.digest;
+            let rangeInfo = '';
+            if (data.dates_covered && data.dates_covered.length > 0) {
+                rangeInfo = `<div class="catchup-range">覆盖日期：${data.dates_covered.map(d => formatSummaryDate(d)).join('、')}</div>`;
+                if (data.backfilled_dates && data.backfilled_dates.length > 0) {
+                    rangeInfo += `<div class="catchup-backfill">已补采：${data.backfilled_dates.map(d => formatSummaryDate(d)).join('、')}</div>`;
+                }
+            }
+
+            let html = rangeInfo;
+            if (digestData.overview) {
+                html += `<div class="catchup-overview">${digestData.overview}</div>`;
+            }
+            if (Array.isArray(digestData.top_news)) {
+                html += '<div class="catchup-news-list">';
+                digestData.top_news.forEach(item => {
+                    html += `<div class="catchup-news-item">
+                        <div class="catchup-news-headline">${item.headline || item.title || ''}</div>
+                        <div class="catchup-news-meta">
+                            <span class="catchup-news-category">${item.category || ''}</span>
+                            ${item.source ? `<span class="catchup-news-source">${item.source}</span>` : ''}
+                        </div>
+                        ${Array.isArray(item.key_points) && item.key_points.length > 0
+                            ? `<ul class="catchup-news-points">${item.key_points.map(p => `<li>${p}</li>`).join('')}</ul>`
+                            : ''}
+                        ${item.original_link ? `<a class="catchup-news-link" href="${item.original_link}" target="_blank" rel="noopener">阅读原文 ${ICONS.external}</a>` : ''}
+                    </div>`;
+                });
+                html += '</div>';
+            }
+            contentEl.innerHTML = html;
+        }
+
+        // Refresh badge
+        _refreshCatchupBadge();
+    } catch (error) {
+        contentEl.innerHTML = `<p class="catchup-placeholder">生成失败：${error.message}</p>`;
+    } finally {
+        if (genBtn) {
+            genBtn.disabled = false;
+            genBtn.textContent = '生成精炼补读';
+        }
+    }
+}
+
+function filterHistoryByViewed() {
+    const checkbox = document.getElementById('history-unread-only');
+    const showUnreadOnly = checkbox && checkbox.checked;
+    const items = document.querySelectorAll('#history-list .history-item');
+    items.forEach(item => {
+        if (showUnreadOnly) {
+            item.style.display = item.classList.contains('history-item--unviewed') ? '' : 'none';
+        } else {
+            item.style.display = '';
+        }
+    });
 }
 
