@@ -7,6 +7,7 @@ subpackage so that existing imports::
 continue to work.
 """
 from app.services.rag import (  # noqa: F401
+    is_rag_available,
     get_bi_encoder,
     get_cross_encoder,
     init_chroma,

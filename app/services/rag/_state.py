@@ -14,10 +14,6 @@ from collections import OrderedDict
 from functools import lru_cache
 from typing import Optional
 
-import chromadb
-from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer, CrossEncoder
-
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -63,19 +59,50 @@ class _BoundedLRU(OrderedDict):
 
 
 # -------------------------------------------------------------------
+# RAG availability check
+# -------------------------------------------------------------------
+
+def is_rag_available() -> bool:
+    """Return True if RAG is enabled AND the required packages are installed."""
+    if not settings.RAG_ENABLED:
+        return False
+    try:
+        import sentence_transformers  # noqa: F401
+        import chromadb  # noqa: F401
+        import rank_bm25  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _require_rag() -> None:
+    """Raise RuntimeError if RAG is not available."""
+    if not settings.RAG_ENABLED:
+        raise RuntimeError("RAG feature is disabled. Set RAG_ENABLED=true to enable.")
+    if not is_rag_available():
+        raise RuntimeError(
+            "RAG dependencies not installed. Run: pip install -r requirements-rag.txt"
+        )
+
+
+# -------------------------------------------------------------------
 # Model Loading (cached, loaded once at startup)
 # -------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def get_bi_encoder() -> SentenceTransformer:
+def get_bi_encoder():
     """Load the Bi-Encoder for generating embeddings. Cached after first call."""
+    _require_rag()
+    from sentence_transformers import SentenceTransformer
     logger.info("Loading Bi-Encoder model (BAAI/bge-m3)")
     return SentenceTransformer("BAAI/bge-m3")
 
 
 @lru_cache(maxsize=1)
-def get_cross_encoder() -> CrossEncoder:
+def get_cross_encoder():
     """Load the Cross-Encoder for reranking. Cached after first call."""
+    _require_rag()
+    from sentence_transformers import CrossEncoder
     logger.info("Loading Cross-Encoder rerank model")
     return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
@@ -87,11 +114,13 @@ def get_cross_encoder() -> CrossEncoder:
 # Lazy-initialised ChromaDB client — created on first use, not at import time.
 # This avoids triggering disk I/O (and potential crashes) when the module is
 # imported for type-checking or testing without a data directory present.
-_chroma_client: Optional[chromadb.PersistentClient] = None
+_chroma_client = None
 
 
-def _get_chroma_client() -> chromadb.PersistentClient:
+def _get_chroma_client():
     """Return the shared ChromaDB PersistentClient, creating it on first call."""
+    _require_rag()
+    import chromadb
     global _chroma_client
     if _chroma_client is None:
         try:
@@ -160,7 +189,12 @@ def init_chroma() -> None:
     Call this once during application startup (from FastAPI lifespan) so that
     the first user request doesn't pay the initialisation cost.  It is safe to
     call multiple times — subsequent calls are no-ops.
+
+    If RAG is disabled, this is a no-op.
     """
+    if not is_rag_available():
+        logger.info("RAG is disabled or dependencies missing; skipping ChromaDB init")
+        return
     client = _get_chroma_client()
     # Load existing BGE-M3 collections so we don't lose track of them.
     # We ignore old collections (e.g. 384-dimensional ones) as they are incompatible.
