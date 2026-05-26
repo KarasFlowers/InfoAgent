@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     # HyDE (Hypothetical Document Embedding) query rewriting
     RAG_HYDE_ENABLED: bool = True
 
+    # --- Web Search (Tavily) ---
+    TAVILY_API_KEY: str | None = None             # Optional: enables web search in Deep Research
+
     # --- Multi-source scraper defaults ---
     GITHUB_TOKEN: str | None = None               # Optional: raises GitHub API rate limit
     HN_FETCH_TOP_STORIES: int = 30                # Hacker News: how many top stories to fetch

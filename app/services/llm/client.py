@@ -49,6 +49,10 @@ class CircuitBreaker:
         self._failures: dict[str, list[float]] = {}
         # key -> time when circuit was opened
         self._opened_at: dict[str, float] = {}
+        # threading.Lock is intentional: the state-machine methods (record_failure,
+        # is_open, reset) are synchronous and called from both sync and async
+        # contexts.  Switching to asyncio.Lock would require making every
+        # call-site await-able, which is not warranted by the current design.
         self._lock = threading.Lock()
 
     def _key(self, base_url: str, model: str) -> str:
@@ -103,46 +107,10 @@ class CircuitBreaker:
                 self._opened_at.clear()
 
 
-def _parse_tier_spec(spec: str, fallback_base_url: str, fallback_api_key: str | None):
-    """Parse a tier spec like 'openai:gpt-4o-mini' into (base_url, api_key, model).
+from app.core.llm_config import parse_tier_spec
 
-    Supported formats:
-      - ""                       → None (use default)
-      - "model-name"             → same base_url/api_key, different model
-      - "provider:model-name"    → well-known provider base_url, same api_key
-      - "base_url|api_key|model" → fully custom endpoint (pipe-separated)
-    """
-    spec = spec.strip()
-    if not spec:
-        return None
-
-    # Fully custom: "https://api.example.com/v1|sk-xxx|model-name"
-    if "|" in spec:
-        parts = spec.split("|", 2)
-        if len(parts) == 3:
-            return parts[0], parts[1], parts[2]
-        return None
-
-    # Well-known providers
-    _PROVIDER_URLS = {
-        "openai": "https://api.openai.com/v1",
-        "deepseek": "https://api.deepseek.com/v1",
-        "anthropic": "https://api.anthropic.com/v1",
-        "groq": "https://api.groq.com/openai/v1",
-        "together": "https://api.together.xyz/v1",
-        "silicon": "https://api.siliconflow.cn/v1",
-        "moonshot": "https://api.moonshot.cn/v1",
-        "zhipu": "https://open.bigmodel.cn/api/paas/v4",
-    }
-
-    if ":" in spec:
-        provider, model = spec.split(":", 1)
-        provider_lower = provider.lower()
-        base_url = _PROVIDER_URLS.get(provider_lower, fallback_base_url)
-        return base_url, fallback_api_key, model
-
-    # Plain model name — same endpoint, different model
-    return fallback_base_url, fallback_api_key, spec
+# Backward-compatible alias for any external imports of the private name
+_parse_tier_spec = parse_tier_spec
 
 
 class LLMClient:
@@ -206,7 +174,7 @@ class LLMClient:
 
         # Parse spec
         spec = self._tier_specs.get(tier, "")
-        parsed = _parse_tier_spec(spec, self._default_base_url, self._default_api_key)
+        parsed = parse_tier_spec(spec, self._default_base_url, self._default_api_key)
         if parsed is None:
             # No config for this tier — use default
             self._tier_clients[tier] = self._client

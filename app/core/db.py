@@ -418,8 +418,8 @@ async def _seed_default_model_api_configs(conn) -> None:
 
     # Fast tier if configured
     if _settings.FAST_LLM:
-        from app.services.llm.client import _parse_tier_spec
-        parsed = _parse_tier_spec(_settings.FAST_LLM, _settings.effective_llm_base_url, _settings.effective_llm_api_key)
+        from app.core.llm_config import parse_tier_spec
+        parsed = parse_tier_spec(_settings.FAST_LLM, _settings.effective_llm_base_url, _settings.effective_llm_api_key)
         if parsed:
             base_url, api_key, model = parsed
             await conn.exec_driver_sql(
@@ -430,8 +430,8 @@ async def _seed_default_model_api_configs(conn) -> None:
 
     # Smart tier if configured
     if _settings.SMART_LLM:
-        from app.services.llm.client import _parse_tier_spec
-        parsed = _parse_tier_spec(_settings.SMART_LLM, _settings.effective_llm_base_url, _settings.effective_llm_api_key)
+        from app.core.llm_config import parse_tier_spec
+        parsed = parse_tier_spec(_settings.SMART_LLM, _settings.effective_llm_base_url, _settings.effective_llm_api_key)
         if parsed:
             base_url, api_key, model = parsed
             await conn.exec_driver_sql(
