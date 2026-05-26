@@ -40,19 +40,19 @@ function _initTheme() {
     const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const isLight = saved ? saved === 'light' : !prefersDark;
     if (isLight) {
-        document.body.classList.add('light-mode');
+        document.documentElement.classList.add('light-mode');
     }
     _updateThemeIcon();
 }
 
 function toggleTheme() {
-    const isLight = document.body.classList.toggle('light-mode');
+    const isLight = document.documentElement.classList.toggle('light-mode');
     try { localStorage.setItem('argos-theme', isLight ? 'light' : 'dark'); } catch (_) {}
     _updateThemeIcon();
 }
 
 function _updateThemeIcon() {
-    const isLight = document.body.classList.contains('light-mode');
+    const isLight = document.documentElement.classList.contains('light-mode');
     const sun = document.getElementById('theme-icon-sun');
     const moon = document.getElementById('theme-icon-moon');
     if (sun) sun.style.display = isLight ? 'none' : 'inline-block';

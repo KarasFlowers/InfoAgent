@@ -9,6 +9,16 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/index.css?v=10">
+    <script>
+        // Apply theme before first paint to avoid flash of dark background
+        try {
+            var saved = localStorage.getItem('argos-theme');
+            var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (saved ? saved === 'light' : !prefersDark) {
+                document.documentElement.classList.add('light-mode');
+            }
+        } catch(_) {}
+    </script>
 </head>
 <body>
     <div class="container">
